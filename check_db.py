@@ -1,0 +1,18 @@
+import sqlite3, os
+db = r'C:\Users\Administrator\AppData\Roaming\usage-pulse\usage-pulse.db'
+print('exists:', os.path.exists(db))
+conn = sqlite3.connect(db)
+c = conn.cursor()
+c.execute('SELECT COUNT(*) FROM proxy_request_logs')
+print('rows:', c.fetchone()[0])
+c.execute('SELECT MIN(created_at), MAX(created_at) FROM proxy_request_logs')
+mn, mx = c.fetchone()
+print('time range:', mn, '->', mx)
+c.execute('SELECT data_source, COUNT(*) FROM proxy_request_logs GROUP BY data_source')
+print('by source:', c.fetchall())
+c.execute("SELECT model, COUNT(*) FROM proxy_request_logs WHERE total_cost_usd='0' GROUP BY model")
+print('zero cost:', c.fetchall()[:10])
+c.execute("SELECT COUNT(*) FROM proxy_request_logs WHERE total_cost_usd='0'")
+print('total zero cost rows:', c.fetchone()[0])
+c.execute("SELECT model, SUM(CAST(total_cost_usd AS REAL)) FROM proxy_request_logs GROUP BY model ORDER BY 2 DESC LIMIT 10")
+print('top models by cost:', c.fetchall())
