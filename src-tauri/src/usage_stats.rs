@@ -54,7 +54,7 @@ pub struct UsageSummary {
     pub cache_hit_rate: f64,
 }
 
-/// 日趋势
+/// 日/小时趋势
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DailyStats {
@@ -214,12 +214,17 @@ pub fn get_usage_summary(db: &Database, q: &UsageQuery) -> Result<UsageSummary> 
     })
 }
 
-/// 日趋势查询
+/// 日/小时趋势查询：短时间范围按小时聚合，较长范围按天聚合。
 pub fn get_daily_trends(db: &Database, q: &UsageQuery) -> Result<Vec<DailyStats>> {
     db.with_conn(|conn| {
+        let bucket_expression = if q.end_date.saturating_sub(q.start_date) <= 2_i64 * 24 * 3600 {
+            "strftime('%Y-%m-%d %H:00:00', l.created_at, 'unixepoch', 'localtime')"
+        } else {
+            "date(l.created_at, 'unixepoch', 'localtime')"
+        };
         let mut sql = format!(
             "SELECT
-                date(l.created_at, 'unixepoch', 'localtime') as date,
+                {bucket_expression} as date,
                 COUNT(*) as cnt,
                 COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as cost,
                 SUM({fresh_input} + l.output_tokens) as total_tokens,
@@ -229,6 +234,7 @@ pub fn get_daily_trends(db: &Database, q: &UsageQuery) -> Result<Vec<DailyStats>
                 SUM(l.cache_creation_tokens) as cache_creation_tokens
              FROM proxy_request_logs l
              WHERE {filter} AND l.created_at BETWEEN ?1 AND ?2",
+            bucket_expression = bucket_expression,
             fresh_input = fresh_input_sql("l"),
             filter = effective_usage_log_filter("l")
         );
@@ -812,5 +818,49 @@ mod tests {
 
         let models = get_model_stats(&db, &query).unwrap();
         assert_eq!(models[0].total_tokens, 350);
+    }
+
+    #[test]
+    fn trends_switch_between_hour_and_day_buckets() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::schema::create_tables(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO proxy_request_logs (
+                request_id, provider_id, app_type, model,
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                input_token_semantics, latency_ms, status_code, created_at, data_source
+             ) VALUES ('trend-test-1', '_codex_session', 'codex', 'gpt-test',
+                       1000, 50, 600, 100, 1, 0, 200, 1700000000, 'codex_session')",
+            [],
+        )
+        .unwrap();
+        let db = Database {
+            conn: std::sync::Mutex::new(conn),
+        };
+
+        let hourly = get_daily_trends(
+            &db,
+            &UsageQuery {
+                start_date: 1699999999,
+                end_date: 1700000001,
+                ..UsageQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hourly.len(), 1);
+        assert_eq!(hourly[0].date.len(), 19);
+        assert!(hourly[0].date.ends_with(":00:00"));
+
+        let daily = get_daily_trends(
+            &db,
+            &UsageQuery {
+                start_date: 1699000000,
+                end_date: 1701000000,
+                ..UsageQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(daily.len(), 1);
+        assert_eq!(daily[0].date.len(), 10);
     }
 }

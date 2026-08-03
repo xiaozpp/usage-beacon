@@ -291,7 +291,17 @@ export function Dashboard() {
         />
 
         {/* 趋势图 */}
-        <UsageTrendChart data={trends.data} isLoading={trends.isLoading} />
+        <UsageTrendChart
+          data={trends.data}
+          isLoading={trends.isLoading}
+          startDate={range.start}
+          endDate={range.end}
+          rangeLabel={
+            range.preset === "today"
+              ? "当天"
+              : PRESETS.find((preset) => preset.value === range.preset)?.label ?? "自定义"
+          }
+        />
 
         {/* 维度统计：参考 CC Switch，按供应商/模型切换查看 */}
         <section className="space-y-3">
