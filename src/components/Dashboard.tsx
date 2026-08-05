@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
@@ -65,6 +65,23 @@ export function Dashboard() {
   const [model, setModel] = useState("");
   const [refreshIntervalMs, setRefreshIntervalMs] = useState(5_000);
   const sync = useSyncSessionLogs();
+  const refreshUsageQueries = useCallback(
+    () =>
+      queryClient.refetchQueries({
+        queryKey: usageKeys.all,
+        type: "active",
+        // 不要重新触发同步查询本身，否则同步完成后的重查会形成循环。
+        predicate: (query) => query.queryKey[1] !== "sync",
+      }),
+    [queryClient],
+  );
+
+  useEffect(() => {
+    // 首次启动时同步和统计查询是并行的。同步完成后补一次重查，避免统计
+    // 只读到同步过程中的部分日志；手动同步也复用这条链路。
+    if (!sync.isSuccess || sync.isFetching || sync.dataUpdatedAt === 0) return;
+    void refreshUsageQueries();
+  }, [refreshUsageQueries, sync.dataUpdatedAt, sync.isFetching, sync.isSuccess]);
 
   const params = useMemo(
     () => ({
@@ -143,13 +160,7 @@ export function Dashboard() {
   };
 
   const handleSync = async () => {
-    try {
-      await sync.refetch();
-    } finally {
-      // 手动同步即使没有新增文件，也要重新查询一次：首次启动时统计查询
-      // 可能早于后台同步完成而进入 error 状态。
-      await queryClient.refetchQueries({ queryKey: usageKeys.all, type: "active" });
-    }
+    await sync.refetch();
   };
 
   const filters: LogFilters = useMemo(
