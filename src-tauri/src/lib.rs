@@ -64,7 +64,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::sync_claude_logs,
+            commands::sync_session_logs,
             commands::fetch_usage_summary,
             commands::fetch_daily_trends,
             commands::fetch_provider_stats,

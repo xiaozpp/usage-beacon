@@ -21,7 +21,7 @@ export interface UsageQueryParams {
 }
 
 export async function syncSessionLogs(): Promise<SessionSyncResult> {
-  return invoke<SessionSyncResult>("sync_claude_logs");
+  return invoke<SessionSyncResult>("sync_session_logs");
 }
 
 export async function fetchUsageSummary(params: UsageQueryParams): Promise<UsageSummary> {

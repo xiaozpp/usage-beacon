@@ -12,7 +12,7 @@ use tauri::State;
 
 /// 同步所有支持的本地会话日志
 #[tauri::command]
-pub async fn sync_claude_logs(db: State<'_, Arc<Database>>) -> Result<SessionSyncResult, String> {
+pub async fn sync_session_logs(db: State<'_, Arc<Database>>) -> Result<SessionSyncResult, String> {
     let db = db.inner().clone();
     let result = tokio::task::spawn_blocking(move || sync_all_session_logs(&db))
         .await
