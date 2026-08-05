@@ -15,6 +15,7 @@ import {
   useProviderStats,
   useSyncSessionLogs,
   useUsageSummary,
+  usageKeys,
 } from "../lib/hooks";
 import { UsageHero } from "./UsageHero";
 import { UsageTrendChart } from "./UsageTrendChart";
@@ -98,6 +99,21 @@ export function Dashboard() {
   const modelStats = useModelStats(params, refreshIntervalMs);
   const providerOptionsQuery = useProviderStats(optionParams, refreshIntervalMs);
   const modelOptionsQuery = useModelStats(modelOptionParams, refreshIntervalMs);
+  const isRefreshing =
+    summary.isFetching ||
+    trends.isFetching ||
+    providerStats.isFetching ||
+    modelStats.isFetching ||
+    providerOptionsQuery.isFetching ||
+    modelOptionsQuery.isFetching;
+  const lastUpdatedAt = Math.max(
+    summary.dataUpdatedAt,
+    trends.dataUpdatedAt,
+    providerStats.dataUpdatedAt,
+    modelStats.dataUpdatedAt,
+    providerOptionsQuery.dataUpdatedAt,
+    modelOptionsQuery.dataUpdatedAt,
+  );
   const providerOptions = useMemo(
     () => uniqueNames(providerOptionsQuery.data?.map((row) => row.providerName), providerName),
     [providerName, providerOptionsQuery.data],
@@ -132,9 +148,7 @@ export function Dashboard() {
     } finally {
       // 手动同步即使没有新增文件，也要重新查询一次：首次启动时统计查询
       // 可能早于后台同步完成而进入 error 状态。
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["usage"] }),
-      ]);
+      await queryClient.refetchQueries({ queryKey: usageKeys.all, type: "active" });
     }
   };
 
@@ -215,6 +229,11 @@ export function Dashboard() {
               aria-label="自动刷新间隔"
               value={refreshIntervalMs}
               onChange={(event) => setRefreshIntervalMs(Number(event.target.value))}
+              title={
+                refreshIntervalMs > 0
+                  ? `每 ${refreshIntervalMs / 1000} 秒自动刷新统计数据`
+                  : "已关闭自动刷新"
+              }
               className="h-9 w-[78px] rounded-md border border-border bg-card px-2.5 text-xs outline-none focus:border-primary"
             >
               {REFRESH_INTERVALS.map((option) => (
@@ -249,7 +268,7 @@ export function Dashboard() {
               <RefreshCw
                 className={`h-3.5 w-3.5 ${sync.isFetching ? "animate-spin" : ""}`}
               />
-              同步
+              {sync.isFetching ? "同步中..." : "同步"}
             </button>
           </div>
         </header>
@@ -263,23 +282,35 @@ export function Dashboard() {
           </div>
         )}
 
-        {/* 同步状态 */}
-        {sync.data && (
-          <div className="rounded-md border border-border/50 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
-            {sync.data.imported > 0 ? (
-              <span>
-                本次同步: 导入 {sync.data.imported} 条 / 跳过{" "}
-                {sync.data.skipped} 条 / 扫描 {sync.data.filesScanned} 个文件
-              </span>
-            ) : (
-              <span>已是最新 (扫描 {sync.data.filesScanned} 个文件)</span>
-            )}
-            {sync.data.errors.length > 0 && (
-              <span className="text-red-500">
-                {" "}
-                · {sync.data.errors.length} 个错误
-              </span>
-            )}
+        {/* 同步与自动刷新状态 */}
+        {(sync.isFetching || sync.data || isRefreshing || lastUpdatedAt > 0) && (
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-border/50 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2">
+              {sync.isFetching ? (
+                <span className="text-primary">正在同步本地会话日志...</span>
+              ) : sync.data ? (
+                <>
+                  {sync.data.imported > 0 ? (
+                    <span>
+                      本次同步: 导入 {sync.data.imported} 条 / 跳过{" "}
+                      {sync.data.skipped} 条 / 扫描 {sync.data.filesScanned} 个文件
+                    </span>
+                  ) : (
+                    <span>已是最新 (扫描 {sync.data.filesScanned} 个文件)</span>
+                  )}
+                  {sync.data.errors.length > 0 && (
+                    <span className="text-red-500">· {sync.data.errors.length} 个错误</span>
+                  )}
+                </>
+              ) : null}
+              {isRefreshing && !sync.isFetching && (
+                <span className="text-primary">正在刷新统计...</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {refreshIntervalMs > 0 && <span>每 {refreshIntervalMs / 1000}s 自动刷新</span>}
+              {lastUpdatedAt > 0 && <span>最近更新 {formatTime(lastUpdatedAt)}</span>}
+            </div>
           </div>
         )}
 
@@ -361,6 +392,14 @@ function uniqueNames(values: Array<string | undefined> | undefined, selected: st
   const names = new Set((values ?? []).filter((value): value is string => Boolean(value)));
   if (selected) names.add(selected);
   return Array.from(names);
+}
+
+function formatTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function getErrorMessage(error: unknown): string {

@@ -19,11 +19,18 @@ function normalizeRefetchInterval(refetchMs: number): number | false {
   return refetchMs > 0 ? refetchMs : false;
 }
 
+function autoRefreshOptions(refetchMs: number) {
+  return {
+    refetchInterval: normalizeRefetchInterval(refetchMs),
+    refetchIntervalInBackground: true,
+  };
+}
+
 export function useUsageSummary(params: UsageQueryParams, refetchMs = 30000) {
   return useQuery({
     queryKey: usageKeys.summary(params),
     queryFn: () => fetchUsageSummary(params),
-    refetchInterval: normalizeRefetchInterval(refetchMs),
+    ...autoRefreshOptions(refetchMs),
   });
 }
 
@@ -31,7 +38,7 @@ export function useDailyTrends(params: UsageQueryParams, refetchMs = 30000) {
   return useQuery({
     queryKey: usageKeys.trends(params),
     queryFn: () => fetchDailyTrends(params),
-    refetchInterval: normalizeRefetchInterval(refetchMs),
+    ...autoRefreshOptions(refetchMs),
   });
 }
 
@@ -39,7 +46,7 @@ export function useProviderStats(params: UsageQueryParams, refetchMs = 30000) {
   return useQuery({
     queryKey: usageKeys.providerStats(params),
     queryFn: () => fetchProviderStats(params),
-    refetchInterval: normalizeRefetchInterval(refetchMs),
+    ...autoRefreshOptions(refetchMs),
   });
 }
 
@@ -47,7 +54,7 @@ export function useModelStats(params: UsageQueryParams, refetchMs = 30000) {
   return useQuery({
     queryKey: usageKeys.modelStats(params),
     queryFn: () => fetchModelStats(params),
-    refetchInterval: normalizeRefetchInterval(refetchMs),
+    ...autoRefreshOptions(refetchMs),
   });
 }
 
@@ -55,7 +62,7 @@ export function useRequestLogs(filters: LogFilters, page: number, pageSize: numb
   return useQuery({
     queryKey: usageKeys.logs(filters, page, pageSize),
     queryFn: () => fetchRequestLogs(filters, page, pageSize),
-    refetchInterval: normalizeRefetchInterval(refetchMs),
+    ...autoRefreshOptions(refetchMs),
   });
 }
 
