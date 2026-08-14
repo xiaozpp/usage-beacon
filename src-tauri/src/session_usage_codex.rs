@@ -13,8 +13,8 @@ use crate::session_usage::{
     update_sync_state, DedupKey, SessionSyncResult,
 };
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
 use rusqlite::OptionalExtension;
+use rust_decimal::Decimal;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -268,17 +268,11 @@ pub(crate) fn reset_codex_usage(db: &Database) -> Result<()> {
             .prepare("SELECT file_path FROM session_log_sync")?
             .query_map([], |row| row.get(0))?
             .collect::<std::result::Result<Vec<String>, _>>()?;
-        for path in paths
-            .into_iter()
-            .filter(|path| {
-                is_codex_cursor_path(path, &codex_dir)
-                    && current_paths.contains(&path.replace('\\', "/"))
-            })
-        {
-            conn.execute(
-                "DELETE FROM session_log_sync WHERE file_path = ?1",
-                [path],
-            )?;
+        for path in paths.into_iter().filter(|path| {
+            is_codex_cursor_path(path, &codex_dir)
+                && current_paths.contains(&path.replace('\\', "/"))
+        }) {
+            conn.execute("DELETE FROM session_log_sync WHERE file_path = ?1", [path])?;
         }
         Ok(())
     })?;
@@ -368,9 +362,7 @@ fn parse_signature_counters(value: Option<&Value>) -> Option<TokenCountersSignat
             .or_else(|| value.get("cache_read_input_tokens"))
             .and_then(Value::as_u64),
         output: value.get("output_tokens").and_then(Value::as_u64),
-        reasoning_output: value
-            .get("reasoning_output_tokens")
-            .and_then(Value::as_u64),
+        reasoning_output: value.get("reasoning_output_tokens").and_then(Value::as_u64),
         total: value.get("total_tokens").and_then(Value::as_u64),
     })
 }
@@ -413,7 +405,9 @@ fn normalize_codex_model(raw: &str) -> String {
 
 fn compute_delta(prev: &Option<CumulativeTokens>, current: &CumulativeTokens) -> DeltaTokens {
     let previous = prev.as_ref();
-    let input = previous.map_or(current.input, |value| current.input.saturating_sub(value.input));
+    let input = previous.map_or(current.input, |value| {
+        current.input.saturating_sub(value.input)
+    });
     let cached_input = previous.map_or(current.cached_input, |value| {
         current.cached_input.saturating_sub(value.cached_input)
     });
@@ -544,10 +538,7 @@ fn build_rollout_index(files: &[PathBuf]) -> RolloutIndex {
     index
 }
 
-fn parse_codex_file(
-    file_path: &Path,
-    root_thread_id: Option<String>,
-) -> Result<ParsedCodexFile> {
+fn parse_codex_file(file_path: &Path, root_thread_id: Option<String>) -> Result<ParsedCodexFile> {
     let file = fs::File::open(file_path)?;
     let reader = BufReader::new(file);
     let mut root_meta_seen = false;
@@ -743,15 +734,18 @@ fn parent_signatures_before(
     let mut max_timestamp = None;
     let mut has_token_without_timestamp = false;
 
-    for line in BufReader::new(file).lines().map_while(std::result::Result::ok) {
+    for line in BufReader::new(file)
+        .lines()
+        .map_while(std::result::Result::ok)
+    {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
         let timestamp = parse_timestamp(value.get("timestamp"));
         if let Some(timestamp) = timestamp {
-            max_timestamp = Some(max_timestamp.map_or(timestamp, |current: DateTime<Utc>| {
-                current.max(timestamp)
-            }));
+            max_timestamp = Some(
+                max_timestamp.map_or(timestamp, |current: DateTime<Utc>| current.max(timestamp)),
+            );
         }
         if value.get("type").and_then(Value::as_str) != Some("event_msg")
             || value
@@ -856,7 +850,11 @@ fn mark_deferred(
     let should_warn = replay_caches()
         .lock()
         .ok()
-        .and_then(|mut caches| caches.pending.insert(file_path.to_path_buf(), entry.clone()))
+        .and_then(|mut caches| {
+            caches
+                .pending
+                .insert(file_path.to_path_buf(), entry.clone())
+        })
         .as_ref()
         != Some(&entry);
     if should_warn {
@@ -1009,26 +1007,23 @@ fn sync_single_codex_file(
                     prefix
                 } else {
                     drop(caches);
-                    let parent_signatures = match resolve_parent_signatures(
-                        parent_id,
-                        cutoff,
-                        rollout_index,
-                    ) {
-                        Ok(signatures) => signatures,
-                        Err(reason) => {
-                            let pending_reason = if rollout_index.contains_key(parent_id) {
-                                PendingReason::Retryable(reason)
-                            } else {
-                                PendingReason::MissingParent(parent_id.clone())
-                            };
-                            return Ok(mark_deferred(
-                                file_path,
-                                file_modified,
-                                file_size,
-                                pending_reason,
-                            ));
-                        }
-                    };
+                    let parent_signatures =
+                        match resolve_parent_signatures(parent_id, cutoff, rollout_index) {
+                            Ok(signatures) => signatures,
+                            Err(reason) => {
+                                let pending_reason = if rollout_index.contains_key(parent_id) {
+                                    PendingReason::Retryable(reason)
+                                } else {
+                                    PendingReason::MissingParent(parent_id.clone())
+                                };
+                                return Ok(mark_deferred(
+                                    file_path,
+                                    file_modified,
+                                    file_size,
+                                    pending_reason,
+                                ));
+                            }
+                        };
                     let prefix = matching_replay_prefix(&parsed.token_events, &parent_signatures);
                     if let Ok(mut caches) = replay_caches().lock() {
                         caches.replay_prefixes.insert(
@@ -1069,9 +1064,7 @@ fn sync_single_codex_file(
             continue;
         }
 
-        let request_id = format!(
-            "{CODEX_THREAD_REQUEST_ID_PREFIX}:{root_thread_id}:{event_index}"
-        );
+        let request_id = format!("{CODEX_THREAD_REQUEST_ID_PREFIX}:{root_thread_id}:{event_index}");
         match insert_codex_session_entry(db, &request_id, event, root_thread_id)? {
             true => result.imported = result.imported.saturating_add(1),
             false => result.skipped = result.skipped.saturating_add(1),
@@ -1205,8 +1198,14 @@ mod tests {
 
     #[test]
     fn normalizes_provider_and_date_suffixes() {
-        assert_eq!(normalize_codex_model("OpenAI/GPT-5.6-SOL-20260305"), "gpt-5.6-sol");
-        assert_eq!(normalize_codex_model("azure/gpt-5.6-luna-20260305"), "gpt-5.6-luna");
+        assert_eq!(
+            normalize_codex_model("OpenAI/GPT-5.6-SOL-20260305"),
+            "gpt-5.6-sol"
+        );
+        assert_eq!(
+            normalize_codex_model("azure/gpt-5.6-luna-20260305"),
+            "gpt-5.6-luna"
+        );
     }
 
     #[test]
@@ -1244,7 +1243,10 @@ mod tests {
             timestamp: None,
         };
         assert_eq!(
-            matching_replay_prefix(&[event(1), event(2), event(3)], &[signature(1), signature(2)]),
+            matching_replay_prefix(
+                &[event(1), event(2), event(3)],
+                &[signature(1), signature(2)]
+            ),
             2
         );
     }

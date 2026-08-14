@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 static DEBOUNCE_FLAG: AtomicBool = AtomicBool::new(false);

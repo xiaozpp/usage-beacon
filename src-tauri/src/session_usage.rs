@@ -123,6 +123,7 @@ pub fn sync_all_session_logs(db: &Database) -> Result<SessionSyncResult> {
             "OpenCode",
             crate::session_usage_opencode::sync_opencode_usage(db),
         ),
+        ("ZCode", crate::session_usage_zcode::sync_zcode_usage(db)),
         ("Grok Build", crate::session_usage_grok::sync_grok_usage(db)),
     ] {
         match step {
@@ -506,10 +507,9 @@ pub(crate) fn should_skip_session_insert(
 
     // 与 CC Switch 一致：只把成功的 proxy 行用于跨源去重；session 侧不暴露
     // cache_creation 时，0 表示未知，允许匹配 proxy 的任意 cache_creation 值。
-    let allow_missing_cache_creation = matches!(
-        key.app_type,
-        "codex" | "gemini" | "opencode"
-    ) && key.cache_creation_tokens == 0;
+    let allow_missing_cache_creation =
+        matches!(key.app_type, "codex" | "gemini" | "opencode" | "zcode")
+            && key.cache_creation_tokens == 0;
     let app_type_match =
         "l.app_type IN (?1, CASE WHEN ?1 = 'claude' THEN 'claude-desktop' ELSE ?1 END)";
     let sql = format!(
@@ -555,7 +555,7 @@ pub fn find_model_pricing(conn: &rusqlite::Connection, model_id: &str) -> Option
         .query_row(
             "SELECT input_cost_per_million, output_cost_per_million,
                     cache_read_cost_per_million, cache_creation_cost_per_million
-             FROM model_pricing WHERE model_id = ?1",
+             FROM model_pricing WHERE LOWER(model_id) = LOWER(?1)",
             rusqlite::params![model_id],
             |row| {
                 Ok((
@@ -579,7 +579,7 @@ pub fn find_model_pricing(conn: &rusqlite::Connection, model_id: &str) -> Option
             conn.query_row(
                 "SELECT input_cost_per_million, output_cost_per_million,
                         cache_read_cost_per_million, cache_creation_cost_per_million
-                 FROM model_pricing WHERE model_id = ?1",
+                 FROM model_pricing WHERE LOWER(model_id) = LOWER(?1)",
                 rusqlite::params![base],
                 |row| {
                     Ok((
@@ -623,23 +623,35 @@ pub struct RecostResult {
 
 /// 回填历史成本为 0 的 session 日志记录。
 ///
-/// 用途：当 model_pricing 表后续补充了新模型定价（如 claude-fable-5）后，
-/// 历史已落库但 total_cost_usd='0' 的行不会自动重算。此函数扫描这些行，
-/// 用当前 model_pricing 重新计算并 UPDATE。
-///
-/// 仅重算会话来源且 total_cost_usd='0' 的行，避免误改已正确计费的 proxy 行。
+/// 这是离线或手动补价时的安全路径：只处理尚未计费的会话行。
 pub fn recost_zero_cost_logs(db: &Database) -> Result<RecostResult> {
+    recost_session_logs_with_filter(db, true)
+}
+
+/// 使用当前 model_pricing 本地缓存重算全部 session 日志记录。
+///
+/// 在线价格同步成功后调用，确保先前按内置回退价计算的历史记录也切换到
+/// 最新缓存价格。只触碰会话来源，不会修改 proxy 请求记录。
+pub fn recost_session_logs(db: &Database) -> Result<RecostResult> {
+    recost_session_logs_with_filter(db, false)
+}
+
+fn recost_session_logs_with_filter(db: &Database, only_zero_cost: bool) -> Result<RecostResult> {
     db.with_conn(|conn| {
         let mut result = RecostResult::default();
+        let zero_cost_filter = if only_zero_cost {
+            " AND total_cost_usd = '0'"
+        } else {
+            ""
+        };
 
-        // 查出所有成本为 0 的 session 行
-        let mut stmt = conn.prepare(
+        let select_sql = format!(
             "SELECT request_id, app_type, model, input_tokens, output_tokens,
                     cache_read_tokens, cache_creation_tokens
              FROM proxy_request_logs
-             WHERE data_source IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session', 'grok_session')
-               AND total_cost_usd = '0'",
-        )?;
+             WHERE data_source IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session', 'grok_session', 'zcode_session'){zero_cost_filter}"
+        );
+        let mut stmt = conn.prepare(&select_sql)?;
         let rows: Vec<(String, String, String, i64, i64, i64, i64)> = stmt
             .query_map([], |row| {
                 Ok((
@@ -655,6 +667,13 @@ pub fn recost_zero_cost_logs(db: &Database) -> Result<RecostResult> {
             .filter_map(|r| r.ok())
             .collect();
         drop(stmt);
+        let update_sql = format!(
+            "UPDATE proxy_request_logs
+             SET input_cost_usd = ?1, output_cost_usd = ?2,
+                 cache_read_cost_usd = ?3, cache_creation_cost_usd = ?4,
+                 total_cost_usd = ?5
+             WHERE request_id = ?6{zero_cost_filter}"
+        );
 
         for (request_id, app_type, model, input, output, cache_read, cache_creation) in rows {
             let pricing = match find_model_pricing(conn, &model) {
@@ -673,19 +692,14 @@ pub fn recost_zero_cost_logs(db: &Database) -> Result<RecostResult> {
                 model: Some(model.clone()),
                 message_id: None,
             };
-            let cost = match app_type.as_str() {
-                "codex" | "gemini" | "grokbuild" => {
-                    CostCalculator::calculate_for_app(&app_type, &usage, &pricing, Decimal::from(1))
-                }
-                _ => CostCalculator::calculate(&usage, &pricing, Decimal::from(1)),
+            let cost = if crate::schema::is_cache_inclusive_app(&app_type) {
+                CostCalculator::calculate_for_app(&app_type, &usage, &pricing, Decimal::from(1))
+            } else {
+                CostCalculator::calculate(&usage, &pricing, Decimal::from(1))
             };
 
             let updated = conn.execute(
-                "UPDATE proxy_request_logs
-                 SET input_cost_usd = ?1, output_cost_usd = ?2,
-                     cache_read_cost_usd = ?3, cache_creation_cost_usd = ?4,
-                     total_cost_usd = ?5
-                 WHERE request_id = ?6 AND total_cost_usd = '0'",
+                &update_sql,
                 rusqlite::params![
                     cost.input_cost.to_string(),
                     cost.output_cost.to_string(),
@@ -705,7 +719,7 @@ pub fn recost_zero_cost_logs(db: &Database) -> Result<RecostResult> {
 
         if result.updated > 0 {
             log::info!(
-                "[RECOST] 回填完成: 更新 {} 条, 跳过 {} 条",
+                "[RECOST] 按本地价格缓存重算完成: 更新 {} 条, 跳过 {} 条",
                 result.updated,
                 result.skipped
             );
@@ -718,6 +732,7 @@ pub fn recost_zero_cost_logs(db: &Database) -> Result<RecostResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn test_strip_date_suffix() {
@@ -728,6 +743,41 @@ mod tests {
         );
         assert_eq!(strip_date_suffix("gpt-5"), "gpt-5");
         assert_eq!(strip_date_suffix("claude"), "claude");
+    }
+
+    #[test]
+    fn test_find_model_pricing_is_case_insensitive() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE model_pricing (
+                model_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                input_cost_per_million TEXT NOT NULL,
+                output_cost_per_million TEXT NOT NULL,
+                cache_read_cost_per_million TEXT NOT NULL,
+                cache_creation_cost_per_million TEXT NOT NULL
+            )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO model_pricing (
+                model_id, display_name, input_cost_per_million, output_cost_per_million,
+                cache_read_cost_per_million, cache_creation_cost_per_million
+             ) VALUES ('glm-5.2', 'GLM-5.2', '0.63', '1.98', '0.0945', '0')",
+            [],
+        )
+        .unwrap();
+
+        let pricing = find_model_pricing(&conn, "GLM-5.2").unwrap();
+        assert_eq!(
+            pricing.input_cost_per_million,
+            Decimal::from_str("0.63").unwrap()
+        );
+        assert_eq!(
+            pricing.output_cost_per_million,
+            Decimal::from_str("1.98").unwrap()
+        );
     }
 
     #[test]

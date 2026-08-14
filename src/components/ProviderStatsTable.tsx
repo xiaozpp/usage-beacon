@@ -10,17 +10,17 @@ export function ProviderStatsTable({ data, isLoading }: Props) {
   const rows = data ?? [];
 
   return (
-    <div className="rounded-lg border border-border bg-card">
-      <div className="border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold">供应商统计</h2>
+    <div className="data-panel">
+      <div className="data-panel-header">
+        <h2 className="panel-title mt-0">供应商统计</h2>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border text-left text-xs text-muted-foreground">
+          <thead className="table-head">
+            <tr className="border-b border-border text-left">
               <th className="px-4 py-2 font-medium">供应商</th>
               <th className="px-4 py-2 text-right font-medium">请求数</th>
-              <th className="px-4 py-2 text-right font-medium">Tokens</th>
+              <th className="px-4 py-2 text-right font-medium">真实 Tokens</th>
               <th className="px-4 py-2 text-right font-medium">总成本</th>
               <th className="px-4 py-2 text-right font-medium">成功率</th>
               <th className="px-4 py-2 text-right font-medium">平均延迟</th>
@@ -43,7 +43,7 @@ export function ProviderStatsTable({ data, isLoading }: Props) {
               rows.map((row) => (
                 <tr
                   key={`${row.providerId}-${row.providerName}`}
-                  className="border-b border-border/50 last:border-0 hover:bg-muted/50"
+                  className="table-row border-b last:border-0"
                 >
                   <td className="px-4 py-2 font-medium">{row.providerName}</td>
                   <td className="px-4 py-2 text-right tabular-nums">{fmtInt(row.requestCount)}</td>

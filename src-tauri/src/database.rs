@@ -26,6 +26,7 @@ impl Database {
         )?;
 
         crate::schema::create_tables(&conn)?;
+        crate::device_transfer::initialize_device_identity(&conn)?;
         crate::schema::seed_model_pricing(&conn)?;
 
         log::info!("数据库已初始化: {}", path.display());

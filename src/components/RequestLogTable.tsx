@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { LogFilters, RequestLogDetail } from "../types/usage";
 import { fmtDateTime, fmtUsd, fmtTokens } from "../lib/format";
@@ -13,26 +13,45 @@ interface Props {
 export function RequestLogTable({ filters, refetchMs = 30000 }: Props) {
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const pageSize = 20;
+  const pageSize = 10;
   const { data, isLoading, error } = useRequestLogs(filters, page, pageSize, refetchMs);
 
   const rows = data?.data ?? [];
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
+  useEffect(() => {
+    setPage(1);
+  }, [
+    filters.appType,
+    filters.providerName,
+    filters.model,
+    filters.deviceId,
+    filters.statusCode,
+    filters.startDate,
+    filters.endDate,
+  ]);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, totalPages));
+  }, [totalPages]);
+
   return (
-    <div className="rounded-lg border border-border bg-card">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold">请求日志</h2>
+    <div className="data-panel">
+      <div className="data-panel-header flex items-center justify-between gap-3">
+        <div>
+          <div className="panel-kicker">EVENT STREAM</div>
+          <h2 className="panel-title">请求日志</h2>
+        </div>
         <span className="text-xs text-muted-foreground">共 {total} 条</span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border text-left text-xs text-muted-foreground">
+          <thead className="table-head">
+            <tr className="border-b border-border text-left">
               <th className="px-4 py-2 font-medium">时间</th>
               <th className="px-4 py-2 font-medium">模型</th>
-              <th className="px-4 py-2 text-right font-medium">输入</th>
+              <th className="px-4 py-2 text-right font-medium">新增输入</th>
               <th className="px-4 py-2 text-right font-medium">输出</th>
               <th className="px-4 py-2 text-right font-medium">缓存读</th>
               <th className="px-4 py-2 text-right font-medium">成本</th>
@@ -63,14 +82,14 @@ export function RequestLogTable({ filters, refetchMs = 30000 }: Props) {
                 <tr
                   key={row.requestId}
                   onClick={() => setSelectedId(row.requestId)}
-                  className="cursor-pointer border-b border-border/50 last:border-0 hover:bg-muted/50"
+                  className="table-row cursor-pointer border-b last:border-0"
                 >
                   <td className="px-4 py-2 text-xs text-muted-foreground">
                     {fmtDateTime(row.createdAt)}
                   </td>
                   <td className="px-4 py-2 font-mono text-xs">{row.model}</td>
                   <td className="px-4 py-2 text-right tabular-nums">
-                    {fmtTokens(row.inputTokens)}
+                    {fmtTokens(row.freshInputTokens)}
                   </td>
                   <td className="px-4 py-2 text-right tabular-nums">
                     {fmtTokens(row.outputTokens)}
@@ -93,7 +112,7 @@ export function RequestLogTable({ filters, refetchMs = 30000 }: Props) {
 
       {/* 分页 */}
       {total > pageSize && (
-        <div className="flex items-center justify-between border-t border-border px-4 py-2">
+        <div className="flex items-center justify-between border-t border-border px-4 py-3">
           <span className="text-xs text-muted-foreground">
             第 {page} / {totalPages} 页
           </span>
@@ -130,8 +149,8 @@ function StatusBadge({ code }: { code: number }) {
     <span
       className={
         ok
-          ? "rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-500"
-          : "rounded bg-red-500/10 px-1.5 py-0.5 text-xs text-red-500"
+          ? "status-badge bg-emerald-400/10 text-emerald-300"
+          : "status-badge bg-red-400/10 text-red-300"
       }
     >
       {code}

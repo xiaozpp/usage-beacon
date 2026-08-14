@@ -159,7 +159,11 @@ fn sync_single_grok_file(db: &Database, file_path: &Path) -> Result<SessionSyncR
 
 fn parse_grok_usage_events(content: &str) -> Vec<GrokUsageEvent> {
     let mut events = Vec::new();
-    for line in content.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
         let Ok(record) = serde_json::from_str::<Value>(line) else {
             continue;
         };
@@ -392,6 +396,9 @@ mod tests {
 
     #[test]
     fn parses_millisecond_epoch_timestamps() {
-        assert_eq!(parse_event_timestamp(Some(&Value::from(1_700_000_000_000i64))), Some(1_700_000_000));
+        assert_eq!(
+            parse_event_timestamp(Some(&Value::from(1_700_000_000_000i64))),
+            Some(1_700_000_000)
+        );
     }
 }

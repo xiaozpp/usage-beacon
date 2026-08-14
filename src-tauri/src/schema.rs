@@ -15,7 +15,7 @@ pub const INPUT_TOKEN_SEMANTICS_TOTAL: i64 = 1; // cache-inclusive
 pub const INPUT_TOKEN_SEMANTICS_FRESH: i64 = 2; // fresh input
 
 /// 缓存包含型应用（input_tokens 包含 cache_read + cache_creation）
-pub const CACHE_INCLUSIVE_APP_TYPES: &[&str] = &["codex", "gemini", "grokbuild"];
+pub const CACHE_INCLUSIVE_APP_TYPES: &[&str] = &["codex", "gemini", "grokbuild", "zcode"];
 
 pub fn is_cache_inclusive_app(app_type: &str) -> bool {
     CACHE_INCLUSIVE_APP_TYPES.contains(&app_type)
@@ -31,6 +31,7 @@ pub const DATA_SOURCE_SESSION_LOG: &str = "session_log";
 pub const DATA_SOURCE_CODEX_SESSION: &str = "codex_session";
 pub const DATA_SOURCE_GEMINI_SESSION: &str = "gemini_session";
 pub const DATA_SOURCE_OPENCODE_SESSION: &str = "opencode_session";
+pub const DATA_SOURCE_ZCODE_SESSION: &str = "zcode_session";
 pub const DATA_SOURCE_GROK_SESSION: &str = "grok_session";
 
 /// 跨源去重窗口（秒）：10 分钟内已有等价 proxy 行则跳过 session 行
@@ -70,9 +71,22 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
             is_streaming INTEGER NOT NULL DEFAULT 0,
             cost_multiplier TEXT NOT NULL DEFAULT '1.0',
             created_at INTEGER NOT NULL,
-            data_source TEXT NOT NULL DEFAULT 'proxy'
+            data_source TEXT NOT NULL DEFAULT 'proxy',
+            device_id TEXT NOT NULL DEFAULT '',
+            device_name TEXT NOT NULL DEFAULT ''
         )",
         [],
+    )?;
+
+    ensure_column(
+        conn,
+        "device_id",
+        "ALTER TABLE proxy_request_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "device_name",
+        "ALTER TABLE proxy_request_logs ADD COLUMN device_name TEXT NOT NULL DEFAULT ''",
     )?;
 
     conn.execute(
@@ -110,6 +124,11 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
          ON proxy_request_logs(app_type, created_at DESC)",
         [],
     )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_request_logs_device_created_at
+         ON proxy_request_logs(device_id, created_at DESC)",
+        [],
+    )?;
 
     // 2. 模型定价表
     conn.execute(
@@ -119,7 +138,29 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
             input_cost_per_million TEXT NOT NULL,
             output_cost_per_million TEXT NOT NULL,
             cache_read_cost_per_million TEXT NOT NULL DEFAULT '0',
-            cache_creation_cost_per_million TEXT NOT NULL DEFAULT '0'
+            cache_creation_cost_per_million TEXT NOT NULL DEFAULT '0',
+            price_source TEXT NOT NULL DEFAULT 'Built-in fallback',
+            price_fetched_at INTEGER
+        )",
+        [],
+    )?;
+    ensure_model_pricing_column(
+        conn,
+        "price_source",
+        "ALTER TABLE model_pricing ADD COLUMN price_source TEXT NOT NULL DEFAULT 'Built-in fallback'",
+    )?;
+    ensure_model_pricing_column(
+        conn,
+        "price_fetched_at",
+        "ALTER TABLE model_pricing ADD COLUMN price_fetched_at INTEGER",
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS model_pricing_sync (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            source TEXT NOT NULL DEFAULT 'Built-in fallback',
+            fetched_at INTEGER,
+            catalog_models INTEGER NOT NULL DEFAULT 0,
+            matched_models INTEGER NOT NULL DEFAULT 0
         )",
         [],
     )?;
@@ -164,6 +205,51 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
         [],
     )?;
 
+    // 所有现有日志写入点继续使用原 SQL；触发器统一补上本机身份。
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS trg_request_logs_device
+         AFTER INSERT ON proxy_request_logs
+         WHEN COALESCE(NEW.device_id, '') = ''
+         BEGIN
+             UPDATE proxy_request_logs
+             SET device_id = COALESCE(
+                     (SELECT value FROM settings WHERE key = 'local_device_id'), ''
+                 ),
+                 device_name = COALESCE(
+                     (SELECT value FROM settings WHERE key = 'local_device_name'), ''
+                 )
+             WHERE request_id = NEW.request_id;
+         END;",
+    )?;
+
+    Ok(())
+}
+
+fn ensure_column(conn: &Connection, name: &str, migration: &str) -> Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM pragma_table_info('proxy_request_logs') WHERE name = ?1
+         )",
+        rusqlite::params![name],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        conn.execute(migration, [])?;
+    }
+    Ok(())
+}
+
+fn ensure_model_pricing_column(conn: &Connection, name: &str, migration: &str) -> Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM pragma_table_info('model_pricing') WHERE name = ?1
+         )",
+        rusqlite::params![name],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        conn.execute(migration, [])?;
+    }
     Ok(())
 }
 
@@ -353,6 +439,8 @@ pub fn seed_model_pricing(conn: &Connection) -> Result<()> {
         ("glm-4.7", "GLM-4.7", "0.6", "2.2", "0.11", "0"),
         ("glm-4.6", "GLM-4.6", "0.6", "2.2", "0.11", "0"),
         ("glm-5", "GLM-5", "1", "3.2", "0.2", "0"),
+        // GLM-5.2：在线价格同步成功后会以实时目录覆盖，内置值用于离线回退
+        ("glm-5.2", "GLM-5.2", "0.63", "1.98", "0.0945", "0"),
         // Qwen
         (
             "qwen3-coder-plus",
@@ -382,14 +470,7 @@ pub fn seed_model_pricing(conn: &Connection) -> Result<()> {
         ("kimi-k2-0905", "Kimi K2", "0.55", "2.20", "0.10", "0"),
         // Grok
         ("grok-4.5", "Grok 4.5", "2", "6", "0.50", "0"),
-        (
-            "grok-4.5-build",
-            "Grok 4.5 Build",
-            "2",
-            "6",
-            "0.30",
-            "0",
-        ),
+        ("grok-4.5-build", "Grok 4.5 Build", "2", "6", "0.30", "0"),
         ("grok-4", "Grok 4", "3", "15", "0.75", "0"),
     ];
 

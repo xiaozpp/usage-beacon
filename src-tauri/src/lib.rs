@@ -1,15 +1,19 @@
 #![allow(dead_code)]
 
 mod calculator;
+mod codex_radar;
 mod commands;
 mod database;
+mod device_transfer;
 mod error;
+mod pricing_sync;
 mod schema;
 mod session_usage;
 mod session_usage_codex;
 mod session_usage_gemini;
 mod session_usage_grok;
 mod session_usage_opencode;
+mod session_usage_zcode;
 mod usage_events;
 mod usage_stats;
 
@@ -46,7 +50,11 @@ pub fn run() {
                 if let Err(e) = run_sync(&db_for_sync).await {
                     log::warn!("初始同步失败: {e}");
                 }
-                // 同步完成后回填历史成本为 0 的记录（修复补充定价后旧行未重算）
+                // 先尝试联网刷新价格并写入本地缓存；失败时继续使用已有缓存。
+                if let Err(e) = run_pricing_refresh(&db_for_sync).await {
+                    log::warn!("初始在线价格刷新失败，将使用本地缓存: {e}");
+                }
+                // 在线刷新失败时，至少回填尚未计费的历史记录。
                 if let Err(e) = run_recost(&db_for_sync).await {
                     log::warn!("初始成本回填失败: {e}");
                 }
@@ -72,6 +80,11 @@ pub fn run() {
             commands::fetch_request_logs,
             commands::fetch_request_detail,
             commands::fetch_model_pricing,
+            commands::refresh_model_pricing,
+            commands::fetch_devices,
+            commands::fetch_codex_radar,
+            commands::export_usage_data,
+            commands::import_usage_data,
             commands::recost_logs,
         ])
         .run(tauri::generate_context!())
@@ -101,4 +114,11 @@ async fn run_recost(db: &Arc<Database>) -> Result<(), error::AppError> {
     .await
     .map_err(|e| error::AppError::Config(format!("回填任务失败: {e}")))??;
     Ok(())
+}
+
+async fn run_pricing_refresh(db: &Arc<Database>) -> Result<(), error::AppError> {
+    pricing_sync::refresh_model_pricing(db.clone())
+        .await
+        .map(|_| ())
+        .map_err(error::AppError::Config)
 }

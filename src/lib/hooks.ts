@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { fetchModelPricing, fetchUsageSummary, fetchDailyTrends, fetchModelStats, fetchProviderStats, fetchRequestLogs, fetchRequestDetail, syncSessionLogs, type UsageQueryParams } from "./api";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { fetchCodexRadar, fetchDevices, fetchModelPricing, fetchUsageSummary, fetchDailyTrends, fetchModelStats, fetchProviderStats, fetchRequestLogs, fetchRequestDetail, refreshModelPricing, syncSessionLogs, type UsageQueryParams } from "./api";
 import type { LogFilters } from "../types/usage";
 
 export const usageKeys = {
@@ -12,7 +12,13 @@ export const usageKeys = {
     ["usage", "logs", filters, page, pageSize] as const,
   detail: (requestId: string) => ["usage", "detail", requestId] as const,
   pricing: ["usage", "pricing"] as const,
+  devices: ["usage", "devices"] as const,
   sync: ["usage", "sync"] as const,
+};
+
+export const radarKeys = {
+  all: ["codex-radar"] as const,
+  snapshot: ["codex-radar", "snapshot"] as const,
 };
 
 function normalizeRefetchInterval(refetchMs: number): number | false {
@@ -79,6 +85,31 @@ export function useModelPricing() {
     queryKey: usageKeys.pricing,
     queryFn: fetchModelPricing,
     staleTime: 5 * 60 * 1000,
+  });
+}
+
+export function useRefreshModelPricing() {
+  return useMutation({
+    mutationFn: refreshModelPricing,
+  });
+}
+
+export function useDevices() {
+  return useQuery({
+    queryKey: usageKeys.devices,
+    queryFn: fetchDevices,
+    staleTime: 30 * 1000,
+  });
+}
+
+export function useCodexRadar() {
+  return useQuery({
+    queryKey: radarKeys.snapshot,
+    queryFn: fetchCodexRadar,
+    staleTime: 10 * 60 * 1000,
+    refetchInterval: 10 * 60 * 1000,
+    refetchIntervalInBackground: false,
+    retry: 1,
   });
 }
 

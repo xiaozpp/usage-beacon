@@ -4,8 +4,15 @@ import openaiSvg from "../assets/app-icons/openai.svg?raw";
 import geminiSvg from "../assets/app-icons/gemini.svg?raw";
 import grokSvg from "../assets/app-icons/grok.svg?raw";
 import opencodeSvg from "../assets/app-icons/opencode.svg?raw";
+import zcodeSvg from "../assets/app-icons/zcode.svg?raw";
 
-export type AppBrandIconName = "claude" | "openai" | "gemini" | "grok" | "opencode";
+export type AppBrandIconName =
+  | "claude"
+  | "openai"
+  | "gemini"
+  | "grok"
+  | "opencode"
+  | "zcode";
 
 const ICONS: Record<AppBrandIconName, string> = {
   claude: claudeSvg,
@@ -13,6 +20,7 @@ const ICONS: Record<AppBrandIconName, string> = {
   gemini: geminiSvg,
   grok: grokSvg,
   opencode: opencodeSvg,
+  zcode: zcodeSvg,
 };
 
 interface Props {

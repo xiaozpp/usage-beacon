@@ -1,7 +1,10 @@
 //! Tauri 命令桥接层
 
+use crate::codex_radar::CodexRadarSnapshot;
 use crate::database::Database;
+use crate::device_transfer::{DeviceInfo, UsageExportPayload, UsageImportResult};
 use crate::error::AppError;
+use crate::pricing_sync::PricingRefreshResult;
 use crate::session_usage::{
     recost_zero_cost_logs, sync_all_session_logs, RecostResult, SessionSyncResult,
 };
@@ -34,6 +37,7 @@ pub fn fetch_usage_summary(
     app_type: Option<String>,
     provider_name: Option<String>,
     model: Option<String>,
+    device_id: Option<String>,
 ) -> Result<UsageSummary, String> {
     let q = UsageQuery {
         start_date,
@@ -41,6 +45,7 @@ pub fn fetch_usage_summary(
         app_type,
         provider_name,
         model,
+        device_id,
     };
     usage_stats::get_usage_summary(db.inner(), &q).map_err(|e| e.to_string())
 }
@@ -54,6 +59,7 @@ pub fn fetch_daily_trends(
     app_type: Option<String>,
     provider_name: Option<String>,
     model: Option<String>,
+    device_id: Option<String>,
 ) -> Result<Vec<DailyStats>, String> {
     let q = UsageQuery {
         start_date,
@@ -61,6 +67,7 @@ pub fn fetch_daily_trends(
         app_type,
         provider_name,
         model,
+        device_id,
     };
     usage_stats::get_daily_trends(db.inner(), &q).map_err(|e| e.to_string())
 }
@@ -74,6 +81,7 @@ pub fn fetch_provider_stats(
     app_type: Option<String>,
     provider_name: Option<String>,
     model: Option<String>,
+    device_id: Option<String>,
 ) -> Result<Vec<ProviderStats>, String> {
     let q = UsageQuery {
         start_date,
@@ -81,6 +89,7 @@ pub fn fetch_provider_stats(
         app_type,
         provider_name,
         model,
+        device_id,
     };
     usage_stats::get_provider_stats(db.inner(), &q).map_err(|e| e.to_string())
 }
@@ -94,6 +103,7 @@ pub fn fetch_model_stats(
     app_type: Option<String>,
     provider_name: Option<String>,
     model: Option<String>,
+    device_id: Option<String>,
 ) -> Result<Vec<ModelStats>, String> {
     let q = UsageQuery {
         start_date,
@@ -101,6 +111,7 @@ pub fn fetch_model_stats(
         app_type,
         provider_name,
         model,
+        device_id,
     };
     usage_stats::get_model_stats(db.inner(), &q).map_err(|e| e.to_string())
 }
@@ -129,6 +140,55 @@ pub fn fetch_request_detail(
 #[tauri::command]
 pub fn fetch_model_pricing(db: State<'_, Arc<Database>>) -> Result<Vec<ModelPricingInfo>, String> {
     usage_stats::get_model_pricing_list(db.inner()).map_err(|e| e.to_string())
+}
+
+/// 从公开在线目录刷新模型 Token 定价，并回填历史零成本会话记录。
+#[tauri::command]
+pub async fn refresh_model_pricing(
+    db: State<'_, Arc<Database>>,
+) -> Result<PricingRefreshResult, String> {
+    crate::pricing_sync::refresh_model_pricing(db.inner().clone()).await
+}
+
+/// 获取本机和已导入设备。
+#[tauri::command]
+pub fn fetch_devices(db: State<'_, Arc<Database>>) -> Result<Vec<DeviceInfo>, String> {
+    crate::device_transfer::get_devices(db.inner()).map_err(|e| e.to_string())
+}
+
+/// 获取 Codex Radar 公开的社区智商与额度数据。
+#[tauri::command]
+pub async fn fetch_codex_radar() -> Result<CodexRadarSnapshot, String> {
+    crate::codex_radar::fetch_codex_radar().await
+}
+
+/// 导出全部设备记录；前端负责保存为 JSON 文件。
+#[tauri::command]
+pub async fn export_usage_data(db: State<'_, Arc<Database>>) -> Result<UsageExportPayload, String> {
+    let db = db.inner().clone();
+    tokio::task::spawn_blocking(move || crate::device_transfer::export_usage_data(&db))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// 导入另一台电脑导出的 JSON，并按 request_id 去重。
+#[tauri::command]
+pub async fn import_usage_data(
+    db: State<'_, Arc<Database>>,
+    contents: String,
+) -> Result<UsageImportResult, String> {
+    let db = db.inner().clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::device_transfer::import_usage_data(&db, &contents)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    if result.imported > 0 {
+        crate::usage_events::notify_log_recorded();
+    }
+    Ok(result)
 }
 
 /// 回填历史成本为 0 的 session 日志记录

@@ -50,6 +50,7 @@ export interface RequestLogDetail {
   requestModel: string | null;
   pricingModel: string | null;
   inputTokens: number;
+  freshInputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
@@ -72,6 +73,7 @@ export interface LogFilters {
   appType?: string | null;
   providerName?: string | null;
   model?: string | null;
+  deviceId?: string | null;
   statusCode?: number | null;
   startDate?: number | null;
   endDate?: number | null;
@@ -91,6 +93,17 @@ export interface ModelPricingInfo {
   outputCostPerMillion: string;
   cacheReadCostPerMillion: string;
   cacheCreationCostPerMillion: string;
+  priceSource: string;
+  priceFetchedAt: number | null;
+}
+
+export interface PricingRefreshResult {
+  source: string;
+  fetchedAt: number;
+  catalogModels: number;
+  updatedModels: number;
+  addedModels: number;
+  recostedRecords: number;
 }
 
 export interface SessionSyncResult {
@@ -100,6 +113,71 @@ export interface SessionSyncResult {
   suspectedDuplicates: number;
   deferredFiles: number;
   errors: string[];
+}
+
+export interface DeviceInfo {
+  id: string;
+  name: string;
+  isLocal: boolean;
+  requestCount: number;
+  lastSeen: number | null;
+}
+
+export interface UsageExportPayload {
+  fileName: string;
+  contents: string;
+  recordCount: number;
+}
+
+export interface UsageImportResult {
+  imported: number;
+  skipped: number;
+  deviceCount: number;
+}
+
+export interface CodexRadarSnapshot {
+  iq: RadarIqSnapshot | null;
+  quota: RadarQuotaSnapshot | null;
+  fetchedAt: number;
+  warnings: string[];
+}
+
+export interface RadarIqSnapshot {
+  sourceUpdatedAt: string;
+  runs24hTotal: number;
+  runsTotal: number;
+  benchmarkId: string;
+  scoreLabel: string;
+  points: RadarIqPoint[];
+}
+
+export interface RadarIqPoint {
+  model: string;
+  effort: string;
+  iq: number;
+  averagePriceUsd: number | null;
+  averageMinutes: number | null;
+  total: number;
+  runs24h: number;
+  runsTotal: number;
+  sourceUpdatedAt: string | null;
+}
+
+export interface RadarQuotaSnapshot {
+  sourceUpdatedAt: string;
+  tiers: RadarQuotaTier[];
+  history: RadarQuotaHistoryPoint[];
+}
+
+export interface RadarQuotaTier {
+  plan: string;
+  weeklyUsd: number;
+  source: string;
+}
+
+export interface RadarQuotaHistoryPoint {
+  label: string;
+  weeklyUsd: number;
 }
 
 // 时间范围预设

@@ -22,6 +22,7 @@ pub struct UsageQuery {
     pub app_type: Option<String>,
     pub provider_name: Option<String>,
     pub model: Option<String>,
+    pub device_id: Option<String>,
 }
 
 impl Default for UsageQuery {
@@ -35,6 +36,7 @@ impl Default for UsageQuery {
             app_type: None,
             provider_name: None,
             model: None,
+            device_id: None,
         }
     }
 }
@@ -99,6 +101,7 @@ pub struct LogFilters {
     pub app_type: Option<String>,
     pub provider_name: Option<String>,
     pub model: Option<String>,
+    pub device_id: Option<String>,
     pub status_code: Option<i32>,
     pub start_date: Option<i64>,
     pub end_date: Option<i64>,
@@ -126,6 +129,7 @@ pub struct RequestLogDetail {
     pub request_model: Option<String>,
     pub pricing_model: Option<String>,
     pub input_tokens: u64,
+    pub fresh_input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
@@ -154,6 +158,8 @@ pub struct ModelPricingInfo {
     pub output_cost_per_million: String,
     pub cache_read_cost_per_million: String,
     pub cache_creation_cost_per_million: String,
+    pub price_source: String,
+    pub price_fetched_at: Option<i64>,
 }
 
 /// 摘要查询
@@ -227,7 +233,7 @@ pub fn get_daily_trends(db: &Database, q: &UsageQuery) -> Result<Vec<DailyStats>
                 {bucket_expression} as date,
                 COUNT(*) as cnt,
                 COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as cost,
-                SUM({fresh_input} + l.output_tokens) as total_tokens,
+                SUM({real_total}) as total_tokens,
                 SUM({fresh_input}) as input_tokens,
                 SUM(l.output_tokens) as output_tokens,
                 SUM(l.cache_read_tokens) as cache_read_tokens,
@@ -235,31 +241,33 @@ pub fn get_daily_trends(db: &Database, q: &UsageQuery) -> Result<Vec<DailyStats>
              FROM proxy_request_logs l
              WHERE {filter} AND l.created_at BETWEEN ?1 AND ?2",
             bucket_expression = bucket_expression,
+            real_total = real_total_tokens_sql("l"),
             fresh_input = fresh_input_sql("l"),
             filter = effective_usage_log_filter("l")
         );
 
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-            Box::new(q.start_date),
-            Box::new(q.end_date),
-        ];
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(q.start_date), Box::new(q.end_date)];
         push_filters(&mut sql, &mut params, "l", q)?;
 
         sql.push_str(" GROUP BY date ORDER BY date ASC");
 
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())), |row| {
-            Ok(DailyStats {
-                date: row.get(0)?,
-                request_count: row.get::<_, i64>(1)? as u32,
-                total_cost: format!("{:.6}", row.get::<_, f64>(2)?),
-                total_tokens: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u64,
-                input_tokens: row.get::<_, Option<i64>>(4)?.unwrap_or(0) as u64,
-                output_tokens: row.get::<_, Option<i64>>(5)?.unwrap_or(0) as u64,
-                cache_read_tokens: row.get::<_, Option<i64>>(6)?.unwrap_or(0) as u64,
-                cache_creation_tokens: row.get::<_, Option<i64>>(7)?.unwrap_or(0) as u64,
-            })
-        })?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())),
+            |row| {
+                Ok(DailyStats {
+                    date: row.get(0)?,
+                    request_count: row.get::<_, i64>(1)? as u32,
+                    total_cost: format!("{:.6}", row.get::<_, f64>(2)?),
+                    total_tokens: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u64,
+                    input_tokens: row.get::<_, Option<i64>>(4)?.unwrap_or(0) as u64,
+                    output_tokens: row.get::<_, Option<i64>>(5)?.unwrap_or(0) as u64,
+                    cache_read_tokens: row.get::<_, Option<i64>>(6)?.unwrap_or(0) as u64,
+                    cache_creation_tokens: row.get::<_, Option<i64>>(7)?.unwrap_or(0) as u64,
+                })
+            },
+        )?;
 
         let mut stats = Vec::new();
         for row in rows {
@@ -277,7 +285,7 @@ pub fn get_provider_stats(db: &Database, q: &UsageQuery) -> Result<Vec<ProviderS
                 l.provider_id,
                 {provider_name} as provider_name,
                 COUNT(*) as cnt,
-                SUM({fresh_input} + l.output_tokens) as total_tokens,
+                SUM({real_total}) as total_tokens,
                 COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
                 SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END) * 100.0
                     / NULLIF(COUNT(*), 0) as success_rate,
@@ -285,7 +293,7 @@ pub fn get_provider_stats(db: &Database, q: &UsageQuery) -> Result<Vec<ProviderS
              FROM proxy_request_logs l
              WHERE {filter} AND l.created_at BETWEEN ?1 AND ?2",
             provider_name = provider_name_coalesce("l"),
-            fresh_input = fresh_input_sql("l"),
+            real_total = real_total_tokens_sql("l"),
             filter = effective_usage_log_filter("l")
         );
 
@@ -325,35 +333,40 @@ pub fn get_model_stats(db: &Database, q: &UsageQuery) -> Result<Vec<ModelStats>>
             "SELECT
                 COALESCE(NULLIF(l.pricing_model, ''), l.model) as model,
                 COUNT(*) as cnt,
-                SUM({fresh_input} + l.output_tokens) as total_tokens,
+                SUM({real_total}) as total_tokens,
                 COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost
              FROM proxy_request_logs l
              WHERE {filter} AND l.created_at BETWEEN ?1 AND ?2",
-            fresh_input = fresh_input_sql("l"),
+            real_total = real_total_tokens_sql("l"),
             filter = effective_usage_log_filter("l")
         );
 
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-            Box::new(q.start_date),
-            Box::new(q.end_date),
-        ];
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(q.start_date), Box::new(q.end_date)];
         push_filters(&mut sql, &mut params, "l", q)?;
 
         sql.push_str(" GROUP BY model ORDER BY total_cost DESC");
 
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())), |row| {
-            let count: i64 = row.get(1)?;
-            let total_cost: f64 = row.get(3)?;
-            let avg_cost = if count > 0 { total_cost / count as f64 } else { 0.0 };
-            Ok(ModelStats {
-                model: row.get(0)?,
-                request_count: count as u32,
-                total_tokens: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
-                total_cost: format!("{:.6}", total_cost),
-                avg_cost_per_request: format!("{:.6}", avg_cost),
-            })
-        })?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())),
+            |row| {
+                let count: i64 = row.get(1)?;
+                let total_cost: f64 = row.get(3)?;
+                let avg_cost = if count > 0 {
+                    total_cost / count as f64
+                } else {
+                    0.0
+                };
+                Ok(ModelStats {
+                    model: row.get(0)?,
+                    request_count: count as u32,
+                    total_tokens: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
+                    total_cost: format!("{:.6}", total_cost),
+                    avg_cost_per_request: format!("{:.6}", avg_cost),
+                })
+            },
+        )?;
 
         let mut stats = Vec::new();
         for row in rows {
@@ -373,7 +386,7 @@ pub fn get_request_logs(
     db.with_conn(|conn| {
         let page = if page == 0 { 1 } else { page };
         let page_size = if page_size == 0 {
-            20
+            10
         } else {
             page_size.min(100)
         };
@@ -384,9 +397,7 @@ pub fn get_request_logs(
 
         if let Some(ref app_type) = filters.app_type {
             if app_type == "claude" {
-                where_clauses.push(
-                    "(l.app_type = ? OR l.app_type = 'claude-desktop')".to_string(),
-                );
+                where_clauses.push("(l.app_type = ? OR l.app_type = 'claude-desktop')".to_string());
                 params.push(Box::new(app_type.clone()));
             } else {
                 where_clauses.push("l.app_type = ?".to_string());
@@ -398,10 +409,12 @@ pub fn get_request_logs(
             params.push(Box::new(provider_name.clone()));
         }
         if let Some(ref model) = filters.model {
-            where_clauses.push(
-                "COALESCE(NULLIF(l.pricing_model, ''), l.model) = ?".to_string(),
-            );
+            where_clauses.push("COALESCE(NULLIF(l.pricing_model, ''), l.model) = ?".to_string());
             params.push(Box::new(model.clone()));
+        }
+        if let Some(ref device_id) = filters.device_id {
+            where_clauses.push("l.device_id = ?".to_string());
+            params.push(Box::new(device_id.clone()));
         }
         if let Some(status) = filters.status_code {
             where_clauses.push("l.status_code = ?".to_string());
@@ -431,7 +444,8 @@ pub fn get_request_logs(
             "SELECT
                 l.request_id, l.provider_id, {provider_name} as provider_name,
                 l.app_type, l.model, l.request_model, l.pricing_model,
-                l.input_tokens, l.output_tokens, l.cache_read_tokens, l.cache_creation_tokens,
+                l.input_tokens, {fresh_input} as fresh_input_tokens,
+                l.output_tokens, l.cache_read_tokens, l.cache_creation_tokens,
                 l.total_cost_usd, l.input_cost_usd, l.output_cost_usd,
                 l.cache_read_cost_usd, l.cache_creation_cost_usd,
                 l.latency_ms, l.status_code, l.error_message, l.session_id,
@@ -440,7 +454,8 @@ pub fn get_request_logs(
              WHERE {where_sql}
              ORDER BY l.created_at DESC
              LIMIT ? OFFSET ?",
-            provider_name = provider_name_coalesce("l")
+            provider_name = provider_name_coalesce("l"),
+            fresh_input = fresh_input_sql("l")
         );
 
         params.push(Box::new(page_size as i64));
@@ -459,22 +474,23 @@ pub fn get_request_logs(
                     request_model: row.get(5)?,
                     pricing_model: row.get(6)?,
                     input_tokens: row.get::<_, i64>(7)? as u64,
-                    output_tokens: row.get::<_, i64>(8)? as u64,
-                    cache_read_tokens: row.get::<_, i64>(9)? as u64,
-                    cache_creation_tokens: row.get::<_, i64>(10)? as u64,
-                    total_cost_usd: row.get(11)?,
-                    input_cost_usd: row.get(12)?,
-                    output_cost_usd: row.get(13)?,
-                    cache_read_cost_usd: row.get(14)?,
-                    cache_creation_cost_usd: row.get(15)?,
-                    latency_ms: row.get(16)?,
-                    status_code: row.get(17)?,
-                    error_message: row.get(18)?,
-                    session_id: row.get(19)?,
-                    is_streaming: row.get::<_, i64>(20)? != 0,
-                    cost_multiplier: row.get(21)?,
-                    created_at: row.get(22)?,
-                    data_source: row.get(23)?,
+                    fresh_input_tokens: row.get::<_, i64>(8)? as u64,
+                    output_tokens: row.get::<_, i64>(9)? as u64,
+                    cache_read_tokens: row.get::<_, i64>(10)? as u64,
+                    cache_creation_tokens: row.get::<_, i64>(11)? as u64,
+                    total_cost_usd: row.get(12)?,
+                    input_cost_usd: row.get(13)?,
+                    output_cost_usd: row.get(14)?,
+                    cache_read_cost_usd: row.get(15)?,
+                    cache_creation_cost_usd: row.get(16)?,
+                    latency_ms: row.get(17)?,
+                    status_code: row.get(18)?,
+                    error_message: row.get(19)?,
+                    session_id: row.get(20)?,
+                    is_streaming: row.get::<_, i64>(21)? != 0,
+                    cost_multiplier: row.get(22)?,
+                    created_at: row.get(23)?,
+                    data_source: row.get(24)?,
                 })
             },
         )?;
@@ -500,14 +516,16 @@ pub fn get_request_detail(db: &Database, request_id: &str) -> Result<Option<Requ
             "SELECT
                 l.request_id, l.provider_id, {provider_name} as provider_name,
                 l.app_type, l.model, l.request_model, l.pricing_model,
-                l.input_tokens, l.output_tokens, l.cache_read_tokens, l.cache_creation_tokens,
+                l.input_tokens, {fresh_input} as fresh_input_tokens,
+                l.output_tokens, l.cache_read_tokens, l.cache_creation_tokens,
                 l.total_cost_usd, l.input_cost_usd, l.output_cost_usd,
                 l.cache_read_cost_usd, l.cache_creation_cost_usd,
                 l.latency_ms, l.status_code, l.error_message, l.session_id,
                 l.is_streaming, l.cost_multiplier, l.created_at, l.data_source
              FROM proxy_request_logs l
              WHERE l.request_id = ?1",
-            provider_name = provider_name_coalesce("l")
+            provider_name = provider_name_coalesce("l"),
+            fresh_input = fresh_input_sql("l")
         );
 
         let result = conn.query_row(&sql, rusqlite::params![request_id], |row| {
@@ -520,22 +538,23 @@ pub fn get_request_detail(db: &Database, request_id: &str) -> Result<Option<Requ
                 request_model: row.get(5)?,
                 pricing_model: row.get(6)?,
                 input_tokens: row.get::<_, i64>(7)? as u64,
-                output_tokens: row.get::<_, i64>(8)? as u64,
-                cache_read_tokens: row.get::<_, i64>(9)? as u64,
-                cache_creation_tokens: row.get::<_, i64>(10)? as u64,
-                total_cost_usd: row.get(11)?,
-                input_cost_usd: row.get(12)?,
-                output_cost_usd: row.get(13)?,
-                cache_read_cost_usd: row.get(14)?,
-                cache_creation_cost_usd: row.get(15)?,
-                latency_ms: row.get(16)?,
-                status_code: row.get(17)?,
-                error_message: row.get(18)?,
-                session_id: row.get(19)?,
-                is_streaming: row.get::<_, i64>(20)? != 0,
-                cost_multiplier: row.get(21)?,
-                created_at: row.get(22)?,
-                data_source: row.get(23)?,
+                fresh_input_tokens: row.get::<_, i64>(8)? as u64,
+                output_tokens: row.get::<_, i64>(9)? as u64,
+                cache_read_tokens: row.get::<_, i64>(10)? as u64,
+                cache_creation_tokens: row.get::<_, i64>(11)? as u64,
+                total_cost_usd: row.get(12)?,
+                input_cost_usd: row.get(13)?,
+                output_cost_usd: row.get(14)?,
+                cache_read_cost_usd: row.get(15)?,
+                cache_creation_cost_usd: row.get(16)?,
+                latency_ms: row.get(17)?,
+                status_code: row.get(18)?,
+                error_message: row.get(19)?,
+                session_id: row.get(20)?,
+                is_streaming: row.get::<_, i64>(21)? != 0,
+                cost_multiplier: row.get(22)?,
+                created_at: row.get(23)?,
+                data_source: row.get(24)?,
             })
         });
 
@@ -552,8 +571,10 @@ pub fn get_model_pricing_list(db: &Database) -> Result<Vec<ModelPricingInfo>> {
     db.with_conn(|conn| {
         let mut stmt = conn.prepare(
             "SELECT model_id, display_name, input_cost_per_million, output_cost_per_million,
-                    cache_read_cost_per_million, cache_creation_cost_per_million
-             FROM model_pricing ORDER BY model_id ASC",
+                    cache_read_cost_per_million, cache_creation_cost_per_million,
+                    price_source, price_fetched_at
+             FROM model_pricing
+             ORDER BY model_id ASC",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -564,6 +585,8 @@ pub fn get_model_pricing_list(db: &Database) -> Result<Vec<ModelPricingInfo>> {
                 output_cost_per_million: row.get(3)?,
                 cache_read_cost_per_million: row.get(4)?,
                 cache_creation_cost_per_million: row.get(5)?,
+                price_source: row.get(6)?,
+                price_fetched_at: row.get(7)?,
             })
         })?;
 
@@ -586,7 +609,7 @@ fn effective_usage_log_filter(alias: &str) -> String {
     );
     format!(
         "NOT (
-            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session')
+            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session', 'zcode_session')
             AND EXISTS (
                 SELECT 1 FROM proxy_request_logs p
                 WHERE {proxy_data_source} = 'proxy'
@@ -599,7 +622,7 @@ fn effective_usage_log_filter(alias: &str) -> String {
                       p.cache_creation_tokens = {alias}.cache_creation_tokens
                       OR (
                           {alias}.cache_creation_tokens = 0
-                          AND {data_source} IN ('codex_session', 'gemini_session', 'opencode_session')
+                          AND {data_source} IN ('codex_session', 'gemini_session', 'opencode_session', 'zcode_session')
                       )
                   )
                   AND p.created_at BETWEEN {alias}.created_at - {window} AND {alias}.created_at + {window}
@@ -643,6 +666,18 @@ fn fresh_input_sql(alias: &str) -> String {
     )
 }
 
+/// 真实 token 总量：新增输入 + 输出 + 缓存读 + 缓存写。
+///
+/// 这一定义与摘要卡片的 real_total_tokens 保持一致，供趋势、供应商、模型
+/// 以及请求详情共享，避免不同界面展示不同的“Tokens”口径。
+fn real_total_tokens_sql(alias: &str) -> String {
+    format!(
+        "({fresh_input} + {a}.output_tokens + {a}.cache_read_tokens + {a}.cache_creation_tokens)",
+        fresh_input = fresh_input_sql(alias),
+        a = alias,
+    )
+}
+
 /// provider_id 占位符到可读名的映射
 fn provider_name_coalesce(alias: &str) -> String {
     format!(
@@ -651,6 +686,7 @@ fn provider_name_coalesce(alias: &str) -> String {
             WHEN '_codex_session' THEN 'Codex (Session)'
             WHEN '_gemini_session' THEN 'Gemini (Session)'
             WHEN '_opencode_session' THEN 'OpenCode (Session)'
+            WHEN '_zcode_session' THEN 'ZCode (Session)'
             WHEN '_grok_session' THEN 'Grok Build (Session)'
             ELSE {a}.provider_id
         END",
@@ -691,6 +727,10 @@ fn push_filters(
             a = alias,
         ));
         params.push(Box::new(model.clone()));
+    }
+    if let Some(ref device_id) = q.device_id {
+        sql.push_str(&format!(" AND {alias}.device_id = ?", alias = alias));
+        params.push(Box::new(device_id.clone()));
     }
     Ok(())
 }
@@ -786,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn summary_and_model_stats_use_the_same_cc_token_columns() {
+    fn summary_and_breakdowns_use_the_same_real_token_columns() {
         let conn = Connection::open_in_memory().unwrap();
         crate::schema::create_tables(&conn).unwrap();
         conn.execute(
@@ -808,6 +848,7 @@ mod tests {
             app_type: None,
             provider_name: None,
             model: None,
+            device_id: None,
         };
 
         let summary = get_usage_summary(&db, &query).unwrap();
@@ -817,7 +858,28 @@ mod tests {
         assert!((summary.cache_hit_rate - 60.0).abs() < 1e-9);
 
         let models = get_model_stats(&db, &query).unwrap();
-        assert_eq!(models[0].total_tokens, 350);
+        assert_eq!(models[0].total_tokens, 1050);
+
+        let providers = get_provider_stats(&db, &query).unwrap();
+        assert_eq!(providers[0].total_tokens, 1050);
+
+        let trends = get_daily_trends(&db, &query).unwrap();
+        assert_eq!(trends[0].total_tokens, 1050);
+
+        let logs = get_request_logs(
+            &db,
+            &LogFilters {
+                start_date: Some(1699999999),
+                end_date: Some(1700000001),
+                ..LogFilters::default()
+            },
+            1,
+            0,
+        )
+        .unwrap();
+        assert_eq!(logs.page_size, 10);
+        assert_eq!(logs.data[0].input_tokens, 1000);
+        assert_eq!(logs.data[0].fresh_input_tokens, 300);
     }
 
     #[test]

@@ -1,14 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   DailyStats,
+  CodexRadarSnapshot,
+  DeviceInfo,
   LogFilters,
   ModelPricingInfo,
   ModelStats,
   PaginatedLogs,
+  PricingRefreshResult,
   ProviderStats,
   RequestLogDetail,
   SessionSyncResult,
   UsageSummary,
+  UsageExportPayload,
+  UsageImportResult,
 } from "../types/usage";
 
 export interface UsageQueryParams {
@@ -17,6 +22,7 @@ export interface UsageQueryParams {
   appType?: string | null;
   providerName?: string | null;
   model?: string | null;
+  deviceId?: string | null;
   [key: string]: number | string | null | undefined;
 }
 
@@ -58,4 +64,24 @@ export async function fetchRequestDetail(requestId: string): Promise<RequestLogD
 
 export async function fetchModelPricing(): Promise<ModelPricingInfo[]> {
   return invoke<ModelPricingInfo[]>("fetch_model_pricing");
+}
+
+export async function refreshModelPricing(): Promise<PricingRefreshResult> {
+  return invoke<PricingRefreshResult>("refresh_model_pricing");
+}
+
+export async function fetchDevices(): Promise<DeviceInfo[]> {
+  return invoke<DeviceInfo[]>("fetch_devices");
+}
+
+export async function fetchCodexRadar(): Promise<CodexRadarSnapshot> {
+  return invoke<CodexRadarSnapshot>("fetch_codex_radar");
+}
+
+export async function exportUsageData(): Promise<UsageExportPayload> {
+  return invoke<UsageExportPayload>("export_usage_data");
+}
+
+export async function importUsageData(contents: string): Promise<UsageImportResult> {
+  return invoke<UsageImportResult>("import_usage_data", { contents });
 }

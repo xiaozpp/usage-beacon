@@ -15,19 +15,22 @@ export function RequestDetailDialog({ requestId, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-4"
       onClick={onClose}
     >
       <div
-        className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-lg border border-border bg-card shadow-lg"
+        className="dialog-panel max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl border bg-card shadow-lg"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 标题栏 */}
-        <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <h2 className="text-sm font-semibold">请求详情</h2>
+        <div className="flex items-center justify-between border-b border-border px-4 py-3.5">
+          <div>
+            <div className="panel-kicker">EVENT INSPECTOR</div>
+            <h2 className="panel-title">请求详情</h2>
+          </div>
           <button
             onClick={onClose}
-            className="rounded p-1 hover:bg-muted"
+            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             aria-label="关闭"
           >
             <X className="h-4 w-4" />
@@ -81,7 +84,8 @@ function DetailBody({ detail }: { detail: RequestLogDetail }) {
       </Section>
 
       <Section title="Token 使用量">
-        <Field label="输入" value={fmtTokens(detail.inputTokens)} />
+        <Field label="新增输入" value={fmtTokens(detail.freshInputTokens)} />
+        <Field label="原始输入" value={fmtTokens(detail.inputTokens)} />
         <Field label="输出" value={fmtTokens(detail.outputTokens)} />
         <Field label="缓存读" value={fmtTokens(detail.cacheReadTokens)} />
         <Field label="缓存写" value={fmtTokens(detail.cacheCreationTokens)} />
@@ -122,7 +126,7 @@ function Section({
 }) {
   return (
     <div>
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+      <h3 className="panel-kicker mb-2">
         {title}
       </h3>
       <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">{children}</div>
@@ -140,9 +144,9 @@ function Field({
   value: string;
   mono?: boolean;
   emphasize?: boolean;
-}) {
+  }) {
   return (
-    <div className="flex items-start justify-between gap-2 rounded border border-border/50 bg-background/40 px-2 py-1.5">
+    <div className="flex items-start justify-between gap-2 rounded-lg border border-border/60 bg-background/40 px-2.5 py-2">
       <span className="text-xs text-muted-foreground">{label}</span>
       <span
         className={`text-right text-xs ${mono ? "font-mono" : ""} ${

@@ -23,6 +23,7 @@ const APP_THEME: Record<string, { label: string; icon: AppBrandIconName; color: 
   gemini: { label: "Gemini", icon: "gemini", color: "text-sky-500" },
   grokbuild: { label: "Grok Build", icon: "grok", color: "text-rose-500" },
   opencode: { label: "OpenCode", icon: "opencode", color: "text-violet-500" },
+  zcode: { label: "ZCode", icon: "zcode", color: "text-slate-700 dark:text-white" },
 };
 
 export function UsageHero({ summary, isLoading, appType }: Props) {
@@ -35,11 +36,11 @@ export function UsageHero({ summary, isLoading, appType }: Props) {
     appType !== "opencode";
 
   return (
-    <section className="rounded-xl border border-border bg-card/70 p-4 shadow-sm md:p-5">
-      <div className="flex flex-col gap-4">
+    <section className="hero-panel p-4 md:p-5">
+      <div className="relative z-10 flex flex-col gap-4">
         <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
           <div className="flex items-center gap-3">
-            <div className="rounded-xl bg-primary/10 p-2.5">
+            <div className="hero-orb">
               {theme ? (
                 <AppBrandIcon icon={theme.icon} name={theme.label} size={20} className={theme.color} />
               ) : (
@@ -47,17 +48,17 @@ export function UsageHero({ summary, isLoading, appType }: Props) {
               )}
             </div>
             <div>
-              <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <div className="hero-kicker mb-2 flex items-center gap-1.5">
                 {theme && <span className={cn("font-semibold", theme.color)}>{theme.label}</span>}
                 {theme && <span className="text-muted-foreground/40">•</span>}
                 <span>真实消耗 Tokens</span>
               </div>
               <div className="flex items-baseline gap-2">
-                <span className="text-2xl font-bold leading-none tracking-tight tabular-nums md:text-3xl">
+                <span className="hero-primary-value tabular-nums">
                   {isLoading ? "..." : summary ? fmtInt(summary.realTotalTokens) : "-"}
                 </span>
                 {summary && !isLoading && (
-                  <span className="rounded-md bg-muted/60 px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+                  <span className="hero-value-chip font-medium">
                     ≈ {fmtTokens(summary.realTotalTokens)}
                   </span>
                 )}
@@ -65,22 +66,18 @@ export function UsageHero({ summary, isLoading, appType }: Props) {
             </div>
           </div>
 
-          <div className="flex items-center gap-5 rounded-xl border border-border/60 bg-background/60 px-4 py-2.5 shadow-sm">
+          <div className="hero-stat-group">
             <div className="flex flex-col">
-              <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                总请求数
-              </span>
-              <span className="flex items-center gap-1.5 text-sm font-semibold tabular-nums">
+              <span className="hero-stat-label">总请求数</span>
+              <span className="hero-stat-value tabular-nums">
                 <Zap className="h-3.5 w-3.5 text-blue-500" />
                 {isLoading ? "..." : summary ? fmtInt(summary.totalRequests) : "-"}
               </span>
             </div>
-            <div className="h-8 w-px bg-border/60" />
+            <div className="hero-stat-divider" />
             <div className="flex flex-col">
-              <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                总成本
-              </span>
-              <span className="text-sm font-semibold tabular-nums text-emerald-500">
+              <span className="hero-stat-label">总成本</span>
+              <span className="hero-stat-value tabular-nums text-emerald-300">
                 {isLoading ? "..." : summary ? fmtUsd(summary.totalCost) : "-"}
               </span>
             </div>
@@ -117,16 +114,16 @@ export function UsageHero({ summary, isLoading, appType }: Props) {
             accent="text-emerald-500"
             isLoading={isLoading}
           />
-          <div className="col-span-2 flex flex-col justify-center rounded-xl border border-border/60 bg-background/40 p-3 shadow-sm lg:col-span-1">
+          <div className="metric-tile col-span-2 flex flex-col justify-center lg:col-span-1">
             <div className="mb-2 flex items-center justify-between text-[11px]">
-              <span className="font-medium text-muted-foreground">缓存命中率</span>
-              <span className="font-bold tabular-nums text-emerald-500">
+              <span className="metric-tile-label mb-0">缓存命中率</span>
+              <span className="font-bold tabular-nums text-emerald-300">
                 {summary && !isLoading ? fmtPercent(cacheHitRate) : "-"}
               </span>
             </div>
-            <div className="relative h-1.5 overflow-hidden rounded-full bg-muted/70">
+            <div className="progress-track">
               <div
-                className="absolute inset-y-0 left-0 rounded-full bg-emerald-500 transition-[width] duration-500"
+                className="progress-fill absolute inset-y-0 left-0 rounded-full transition-[width] duration-500"
                 style={{ width: `${Math.max(0, Math.min(100, cacheHitRate))}%` }}
               />
             </div>
@@ -153,8 +150,8 @@ function MiniStat({
   isLoading: boolean;
 }) {
   return (
-    <div className="rounded-xl border border-border/60 bg-background/40 p-3 shadow-sm">
-      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+    <div className="metric-tile">
+      <div className="metric-tile-label">
         <span className={accent}>{icon}</span>
         <span>{label}</span>
       </div>

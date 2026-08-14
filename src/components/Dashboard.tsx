@@ -1,23 +1,34 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   Activity,
   BarChart3,
+  CircleDollarSign,
+  Download,
   LayoutGrid,
   RefreshCw,
+  SlidersHorizontal,
+  Upload,
 } from "lucide-react";
 import type { DateRange, LogFilters, RangePreset } from "../types/usage";
 import { makeRange } from "../types/usage";
 import { useUsageEventBridge } from "../lib/eventBridge";
 import {
   useDailyTrends,
+  useDevices,
+  useModelPricing,
   useModelStats,
   useProviderStats,
+  useRefreshModelPricing,
   useSyncSessionLogs,
   useUsageSummary,
   usageKeys,
 } from "../lib/hooks";
+import { exportUsageData, importUsageData } from "../lib/api";
 import { UsageHero } from "./UsageHero";
+import { UsageInsights } from "./UsageInsights";
+import { CodexRadarPanel } from "./CodexRadarPanel";
 import { UsageTrendChart } from "./UsageTrendChart";
 import { ModelStatsTable } from "./ModelStatsTable";
 import { ProviderStatsTable } from "./ProviderStatsTable";
@@ -35,12 +46,18 @@ const PRESETS: { label: string; value: RangePreset }[] = [
 ];
 
 const APP_FILTERS = [
-  { value: "all", label: "全部应用", icon: null },
-  { value: "claude", label: "Claude Code", icon: "claude" },
-  { value: "codex", label: "Codex", icon: "openai" },
-  { value: "gemini", label: "Gemini", icon: "gemini" },
-  { value: "grokbuild", label: "Grok Build", icon: "grok" },
-  { value: "opencode", label: "OpenCode", icon: "opencode" },
+  { value: "all", label: "全部应用", icon: null, providerName: "" },
+  { value: "claude", label: "Claude Code", icon: "claude", providerName: "Claude (Session)" },
+  { value: "codex", label: "Codex", icon: "openai", providerName: "Codex (Session)" },
+  { value: "gemini", label: "Gemini", icon: "gemini", providerName: "Gemini (Session)" },
+  {
+    value: "grokbuild",
+    label: "Grok Build",
+    icon: "grok",
+    providerName: "Grok Build (Session)",
+  },
+  { value: "opencode", label: "OpenCode", icon: "opencode", providerName: "OpenCode (Session)" },
+  { value: "zcode", label: "ZCode", icon: "zcode", providerName: "ZCode (Session)" },
 ] as const;
 
 const REFRESH_INTERVALS = [
@@ -63,8 +80,29 @@ export function Dashboard() {
   const [appType, setAppType] = useState<AppFilter>("all");
   const [providerName, setProviderName] = useState("");
   const [model, setModel] = useState("");
+  const [deviceId, setDeviceId] = useState("");
   const [refreshIntervalMs, setRefreshIntervalMs] = useState(5_000);
+  const [isTransferring, setIsTransferring] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const priceAutoRefreshAttemptedRef = useRef(false);
   const sync = useSyncSessionLogs();
+  const pricing = useModelPricing();
+  const refreshPricing = useRefreshModelPricing();
+  const pricingCacheSummary = useMemo(() => {
+    const rows = pricing.data ?? [];
+    const liveModels = rows.filter((row) => row.priceSource === "OpenRouter live").length;
+    const latestFetchedAt = rows.reduce(
+      (latest, row) => Math.max(latest, row.priceFetchedAt ?? 0),
+      0,
+    );
+    return {
+      modelCount: rows.length,
+      liveModels,
+      fallbackModels: Math.max(0, rows.length - liveModels),
+      latestFetchedAt,
+    };
+  }, [pricing.data]);
+  const devices = useDevices();
   const refreshUsageQueries = useCallback(
     () =>
       queryClient.refetchQueries({
@@ -90,8 +128,9 @@ export function Dashboard() {
       appType: appType === "all" ? null : appType,
       providerName: providerName || null,
       model: model || null,
+      deviceId: deviceId || null,
     }),
-    [appType, model, providerName, range],
+    [appType, deviceId, model, providerName, range],
   );
 
   const optionParams = useMemo(
@@ -101,8 +140,9 @@ export function Dashboard() {
       appType: appType === "all" ? null : appType,
       providerName: null,
       model: null,
+      deviceId: deviceId || null,
     }),
-    [appType, range],
+    [appType, deviceId, range],
   );
 
   const modelOptionParams = useMemo(
@@ -146,21 +186,108 @@ export function Dashboard() {
     modelStats.error ??
     providerOptionsQuery.error ??
     modelOptionsQuery.error ??
+    devices.error ??
     sync.error;
 
-  const changeAppType = (next: AppFilter) => {
+  const selectAppFilter = (next: AppFilter, selectedProviderName?: string) => {
     setAppType(next);
-    setProviderName("");
+    setProviderName(
+      selectedProviderName ?? APP_FILTERS.find((filter) => filter.value === next)?.providerName ?? "",
+    );
     setModel("");
+    // ZCode 本机记录目前主要是历史数据，避免“今天”窗口切换后看起来像没有接入。
+    if (next === "zcode" && range.preset === "today") {
+      setRange(makeRange("all"));
+    }
+  };
+
+  const changeAppType = (next: AppFilter) => {
+    selectAppFilter(next);
   };
 
   const changeProviderName = (next: string) => {
-    setProviderName(next);
-    setModel("");
+    selectAppFilter(
+      APP_FILTERS.find((filter) => filter.providerName === next)?.value ?? "all",
+      next,
+    );
   };
 
   const handleSync = async () => {
     await sync.refetch();
+  };
+
+  const handleRefreshPricing = async () => {
+    priceAutoRefreshAttemptedRef.current = true;
+    try {
+      const result = await refreshPricing.mutateAsync();
+      await queryClient.invalidateQueries({ queryKey: usageKeys.pricing });
+      await refreshUsageQueries();
+      toast.success(
+        `在线价格已更新 ${result.updatedModels} 个模型，新增 ${result.addedModels} 个，回填 ${result.recostedRecords} 条记录`,
+      );
+    } catch (error) {
+      toast.error(`在线价格更新失败：${getErrorMessage(error)}，继续使用本地价格缓存`);
+    }
+  };
+
+  useEffect(() => {
+    if (!pricing.isSuccess || priceAutoRefreshAttemptedRef.current) return;
+    const fetchedAt = pricingCacheSummary.latestFetchedAt;
+    const isStale = !fetchedAt || Date.now() / 1000 - fetchedAt > 6 * 60 * 60;
+    priceAutoRefreshAttemptedRef.current = true;
+    if (!isStale) return;
+
+    // 启动时静默尝试一次；失败时保留内置价，不打断本地统计。
+    void refreshPricing.mutateAsync().then(async () => {
+      await queryClient.invalidateQueries({ queryKey: usageKeys.pricing });
+      await refreshUsageQueries();
+    }).catch(() => undefined);
+  }, [pricing.isSuccess, pricingCacheSummary.latestFetchedAt, queryClient, refreshPricing, refreshUsageQueries]);
+
+  const handleExport = async () => {
+    setIsTransferring(true);
+    try {
+      const payload = await exportUsageData();
+      const url = URL.createObjectURL(
+        new Blob([payload.contents], { type: "application/json;charset=utf-8" }),
+      );
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = payload.fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      toast.success(`已导出 ${payload.recordCount.toLocaleString("zh-CN")} 条记录`);
+    } catch (error) {
+      toast.error(`导出失败：${getErrorMessage(error)}`);
+    } finally {
+      setIsTransferring(false);
+    }
+  };
+
+  const handleImport = async (event: ChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    if (file.size > 250 * 1024 * 1024) {
+      toast.error("导入文件不能超过 250MB");
+      return;
+    }
+
+    setIsTransferring(true);
+    try {
+      const result = await importUsageData(await file.text());
+      await queryClient.invalidateQueries({ queryKey: usageKeys.all });
+      toast.success(
+        `合并完成：新增 ${result.imported.toLocaleString("zh-CN")} 条，跳过 ${result.skipped.toLocaleString("zh-CN")} 条重复记录`,
+      );
+    } catch (error) {
+      toast.error(`导入失败：${getErrorMessage(error)}`);
+    } finally {
+      setIsTransferring(false);
+    }
   };
 
   const filters: LogFilters = useMemo(
@@ -168,23 +295,71 @@ export function Dashboard() {
       appType: appType === "all" ? null : appType,
       providerName: providerName || null,
       model: model || null,
+      deviceId: deviceId || null,
       startDate: range.start,
       endDate: range.end,
     }),
-    [appType, model, providerName, range],
+    [appType, deviceId, model, providerName, range],
   );
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto max-w-6xl space-y-4 p-4 md:p-6">
+    <div className="app-shell text-foreground">
+      <div className="app-content mx-auto max-w-7xl space-y-5 px-4 py-5 md:px-6 md:py-7 lg:px-8">
         {/* 顶部工具栏 */}
-        <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">使用统计</h1>
-            <p className="text-xs text-muted-foreground">查看 AI 模型的使用情况和成本统计</p>
+        <header className="dashboard-header flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-3.5">
+            <div className="brand-orb" aria-hidden="true">
+              <Activity className="relative z-10 h-6 w-6" />
+            </div>
+            <div>
+              <div className="dashboard-kicker">
+                <span className="status-dot" />
+                LIVE / USAGE PULSE
+              </div>
+              <h1 className="dashboard-title">
+                使用统计 <span>CONTROL CENTER</span>
+              </h1>
+              <p className="dashboard-subtitle">查看 AI 模型的使用情况和成本统计</p>
+            </div>
           </div>
-          <div className="flex flex-wrap items-center justify-end gap-1.5">
-            <div className="flex items-center rounded-lg border border-border bg-card p-0.5">
+          <div className="system-pill self-start lg:self-auto">
+            <span className={`system-dot ${isRefreshing ? "is-busy" : ""}`} />
+            {isRefreshing ? "实时同步中" : "数据已就绪"}
+          </div>
+        </header>
+
+        <section className="control-panel">
+          <div className="control-panel-header">
+            <div className="control-caption">
+              <div className="control-caption-icon" aria-hidden="true">
+                <SlidersHorizontal className="h-4 w-4" />
+              </div>
+              <div>
+                <div className="control-caption-title">FILTER MATRIX</div>
+                <div className="control-caption-subtitle">选择设备、应用、来源和时间窗口</div>
+              </div>
+            </div>
+            <span className="control-panel-hint">MULTI-DEVICE / LOCAL</span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              aria-label="按设备筛选"
+              value={deviceId}
+              onChange={(event) => setDeviceId(event.target.value)}
+              className="control-select device-select"
+            >
+              <option value="">全部设备（汇总）</option>
+              {(devices.data ?? []).map((device) => (
+                <option key={device.id} value={device.id}>
+                  {device.isLocal
+                    ? `本机 · ${device.name}`
+                    : `${device.name} · ${device.requestCount.toLocaleString("zh-CN")} 条`}
+                </option>
+              ))}
+            </select>
+
+            <div className="app-filter-group" role="group" aria-label="按应用筛选">
               {APP_FILTERS.map(({ value, label, icon }) => (
                 <button
                   key={value}
@@ -193,10 +368,8 @@ export function Dashboard() {
                   aria-label={label}
                   aria-pressed={appType === value}
                   onClick={() => changeAppType(value)}
-                  className={`flex h-8 items-center justify-center rounded-md px-2.5 transition-colors ${
-                    appType === value
-                      ? "bg-primary text-primary-foreground shadow-sm"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  className={`app-filter-button flex h-8 items-center justify-center rounded-md px-2.5 ${
+                    appType === value ? "is-active" : ""
                   }`}
                 >
                   {icon ? (
@@ -212,7 +385,7 @@ export function Dashboard() {
               aria-label="按来源筛选"
               value={providerName}
               onChange={(event) => changeProviderName(event.target.value)}
-              className="h-9 max-w-[150px] rounded-md border border-border bg-card px-2.5 text-xs outline-none focus:border-primary"
+              className="control-select"
             >
               <option value="">全部来源</option>
               {providerOptions.map((name) => (
@@ -226,7 +399,7 @@ export function Dashboard() {
               aria-label="按模型筛选"
               value={model}
               onChange={(event) => setModel(event.target.value)}
-              className="h-9 max-w-[150px] rounded-md border border-border bg-card px-2.5 text-xs outline-none focus:border-primary"
+              className="control-select"
             >
               <option value="">全部模型</option>
               {modelOptions.map((name) => (
@@ -245,7 +418,7 @@ export function Dashboard() {
                   ? `每 ${refreshIntervalMs / 1000} 秒自动刷新统计数据`
                   : "已关闭自动刷新"
               }
-              className="h-9 w-[78px] rounded-md border border-border bg-card px-2.5 text-xs outline-none focus:border-primary"
+              className="control-select w-[78px] min-w-0"
             >
               {REFRESH_INTERVALS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -254,15 +427,13 @@ export function Dashboard() {
               ))}
             </select>
 
-            <div className="flex whitespace-nowrap rounded-md border border-border bg-card p-0.5">
+            <div className="range-group flex-wrap whitespace-nowrap">
               {PRESETS.map((p) => (
                 <button
                   key={p.value}
                   onClick={() => setRange(makeRange(p.value))}
-                    className={`rounded px-2 py-1 text-xs transition-colors ${
-                    range.preset === p.value
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-muted"
+                  className={`range-button rounded px-2 py-1 text-xs ${
+                    range.preset === p.value ? "is-active" : ""
                   }`}
                 >
                   {p.label}
@@ -270,10 +441,41 @@ export function Dashboard() {
               ))}
             </div>
 
+            <div className="transfer-button-group" role="group" aria-label="多设备数据迁移">
+              <button
+                type="button"
+                onClick={() => void handleExport()}
+                disabled={isTransferring}
+                className="transfer-button"
+                title="导出全部设备记录，复制到其他电脑后导入"
+              >
+                <Download className="h-3.5 w-3.5" />
+                导出
+              </button>
+              <button
+                type="button"
+                onClick={() => importInputRef.current?.click()}
+                disabled={isTransferring}
+                className="transfer-button"
+                title="导入其他电脑导出的 JSON，自动跳过重复记录"
+              >
+                <Upload className="h-3.5 w-3.5" />
+                导入
+              </button>
+              <input
+                ref={importInputRef}
+                type="file"
+                accept="application/json,.json"
+                onChange={(event) => void handleImport(event)}
+                hidden
+                tabIndex={-1}
+              />
+            </div>
+
             <button
               onClick={() => void handleSync()}
               disabled={sync.isFetching}
-              className="flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-xs hover:bg-muted disabled:opacity-50"
+              className="sync-button"
               title="立即同步本地会话日志"
             >
               <RefreshCw
@@ -281,21 +483,34 @@ export function Dashboard() {
               />
               {sync.isFetching ? "同步中..." : "同步"}
             </button>
+
+            <button
+              type="button"
+              onClick={() => void handleRefreshPricing()}
+              disabled={refreshPricing.isPending}
+              className="sync-button"
+              title="从公开在线目录更新 API Token 价格，不改变用量取数"
+            >
+              <CircleDollarSign
+                className={`h-3.5 w-3.5 ${refreshPricing.isPending ? "animate-spin" : ""}`}
+              />
+              {refreshPricing.isPending ? "价格中..." : "更新价格"}
+            </button>
           </div>
-        </header>
+        </section>
 
         {loadError && (
           <div
             role="alert"
-            className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-500"
+            className="alert-panel text-xs"
           >
             使用统计加载失败：{getErrorMessage(loadError)}。请点击“同步”重试。
           </div>
         )}
 
         {/* 同步与自动刷新状态 */}
-        {(sync.isFetching || sync.data || isRefreshing || lastUpdatedAt > 0) && (
-          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-border/50 bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
+        {(sync.isFetching || sync.data || isRefreshing || lastUpdatedAt > 0 || pricing.data) && (
+          <div className="status-panel flex-wrap">
             <div className="flex items-center gap-2">
               {sync.isFetching ? (
                 <span className="text-primary">正在同步本地会话日志...</span>
@@ -317,19 +532,56 @@ export function Dashboard() {
               {isRefreshing && !sync.isFetching && (
                 <span className="text-primary">正在刷新统计...</span>
               )}
+              {refreshPricing.isPending && (
+                <span className="text-primary">正在联网更新价格...</span>
+              )}
             </div>
             <div className="flex items-center gap-2">
               {refreshIntervalMs > 0 && <span>每 {refreshIntervalMs / 1000}s 自动刷新</span>}
               {lastUpdatedAt > 0 && <span>最近更新 {formatTime(lastUpdatedAt)}</span>}
             </div>
+            {pricingCacheSummary.modelCount > 0 && (
+              <div
+                className="flex items-center gap-1.5 text-xs"
+                title="在线价格成功后会按模型写入本地缓存；成本计算只读取本地缓存"
+              >
+                <CircleDollarSign className="h-3.5 w-3.5 text-primary" />
+                <span>
+                  价格缓存：在线 {pricingCacheSummary.liveModels} 个 / 回退 {pricingCacheSummary.fallbackModels} 个
+                </span>
+                <span>·</span>
+                <span>
+                  {pricingCacheSummary.latestFetchedAt
+                    ? `${formatTime(pricingCacheSummary.latestFetchedAt * 1000)} 更新`
+                    : "尚未联网，使用本地回退价"}
+                </span>
+              </div>
+            )}
           </div>
         )}
+
+        {/* 第三方社区雷达独立联网，优先展示；失败时不影响本地统计。 */}
+        <CodexRadarPanel />
 
         {/* 概览卡片 */}
         <UsageHero
           summary={summary.data}
           isLoading={summary.isLoading}
           appType={appType === "all" ? null : appType}
+        />
+
+        {/* 从当前已加载数据派生的分析洞察，不增加新的取数链路 */}
+        <UsageInsights
+          summary={summary.data}
+          trends={trends.data}
+          providers={providerStats.data}
+          models={modelStats.data}
+          isLoading={
+            summary.isLoading ||
+            trends.isLoading ||
+            providerStats.isLoading ||
+            modelStats.isLoading
+          }
         />
 
         {/* 趋势图 */}
@@ -347,20 +599,23 @@ export function Dashboard() {
 
         {/* 维度统计：参考 CC Switch，按供应商/模型切换查看 */}
         <section className="space-y-3">
-          <div
-            role="tablist"
-            aria-label="统计维度"
-            className="inline-flex items-center gap-1 rounded-lg border border-border bg-muted/40 p-1"
-          >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="panel-kicker">BREAKDOWN / DIMENSIONS</div>
+              <div className="mt-1 text-xs text-muted-foreground">按供应商或模型查看细分</div>
+            </div>
+            <div
+              role="tablist"
+              aria-label="统计维度"
+              className="tab-switcher"
+            >
             <button
               type="button"
               role="tab"
               aria-selected={statsTab === "providers"}
               onClick={() => setStatsTab("providers")}
-              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                statsTab === "providers"
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              className={`tab-button flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium ${
+                statsTab === "providers" ? "is-active" : ""
               }`}
             >
               <Activity className="h-3.5 w-3.5" />
@@ -371,15 +626,14 @@ export function Dashboard() {
               role="tab"
               aria-selected={statsTab === "models"}
               onClick={() => setStatsTab("models")}
-              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                statsTab === "models"
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              className={`tab-button flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium ${
+                statsTab === "models" ? "is-active" : ""
               }`}
             >
               <BarChart3 className="h-3.5 w-3.5" />
               模型统计
             </button>
+            </div>
           </div>
 
           {statsTab === "providers" ? (
