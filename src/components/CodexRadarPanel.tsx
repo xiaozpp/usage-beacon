@@ -16,7 +16,8 @@ import {
   YAxis,
 } from "recharts";
 import { useCodexRadar } from "../lib/hooks";
-import { fmtInt, fmtUsd } from "../lib/format";
+import { fmtInt, fmtUsd, getFormatLocale } from "../lib/format";
+import { useI18n, type TranslationKey } from "../lib/i18n";
 import type { RadarIqPoint, RadarQuotaHistoryPoint } from "../types/usage";
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
@@ -37,6 +38,7 @@ const EFFORT_LABELS: Record<string, string> = {
 };
 
 export function CodexRadarPanel() {
+  const { t } = useI18n();
   const radar = useCodexRadar();
   const iq = radar.data?.iq;
   const quota = radar.data?.quota;
@@ -68,38 +70,38 @@ export function CodexRadarPanel() {
           </div>
           <div>
             <div className="panel-kicker">CODEX RADAR / NETWORK</div>
-            <h2 className="panel-title">联网智商与额度雷达</h2>
-            <p className="radar-board-subtitle">社区实测能力、任务均价与订阅周容量</p>
+            <h2 className="panel-title">{t("radar.title")}</h2>
+            <p className="radar-board-subtitle">{t("radar.subtitle")}</p>
           </div>
         </div>
         <div className="radar-board-actions">
           <span className={`radar-live-badge ${radar.isError ? "is-error" : ""}`}>
             <Radio className="h-3.5 w-3.5" />
-            {radar.isError ? "网络不可用" : radar.isFetching ? "联网更新中" : "社区数据在线"}
+            {radar.isError ? t("radar.offline") : radar.isFetching ? t("radar.updating") : t("radar.online")}
           </span>
           <button
             type="button"
             className="radar-refresh-button"
             onClick={() => void radar.refetch()}
             disabled={radar.isFetching}
-            title="重新获取 Codex Radar 数据"
+            title={t("radar.refreshTitle")}
           >
             <RefreshCw className={`h-3.5 w-3.5 ${radar.isFetching ? "animate-spin" : ""}`} />
-            刷新
+            {t("radar.refresh")}
           </button>
         </div>
       </header>
 
       {radar.isLoading ? (
         <div className="radar-loading" role="status">
-          正在连接 Codex Radar…
+          {t("radar.loading")}
         </div>
       ) : radar.isError && !radar.data ? (
         <div className="radar-error" role="alert">
           <AlertTriangle className="h-4 w-4" />
           <div>
-            <strong>雷达暂时无法联网</strong>
-            <span>本地使用统计不受影响，可以稍后重试。</span>
+            <strong>{t("radar.errorTitle")}</strong>
+            <span>{t("radar.errorSubtitle")}</span>
           </div>
         </div>
       ) : (
@@ -113,19 +115,19 @@ export function CodexRadarPanel() {
 
           <div className="radar-kpi-strip">
             <RadarKpi
-              label="当前最高 IQ"
+              label={t("radar.currentTopIq")}
               value={strongest ? strongest.iq.toFixed(1) : "—"}
-              note={strongest ? `${modelLabel(strongest.model)} · ${effortLabel(strongest.effort)}` : "等待数据"}
+              note={strongest ? `${modelLabel(strongest.model)} · ${effortLabel(strongest.effort)}` : t("radar.waiting")}
             />
             <RadarKpi
-              label="近 24h 众测"
+              label={t("radar.runs24h")}
               value={iq ? fmtInt(iq.runs24hTotal) : "—"}
-              note={iq ? `累计 ${fmtInt(iq.runsTotal)} 次` : "等待数据"}
+              note={iq ? t("radar.accumulatedRuns", { count: fmtInt(iq.runsTotal) }) : t("radar.waiting")}
             />
             <RadarKpi
-              label="90+ IQ 雷达均价最低"
+              label={t("radar.lowest90Price")}
               value={radarPricePick?.averagePriceUsd != null ? fmtUsd(radarPricePick.averagePriceUsd) : "—"}
-              note={radarPricePick ? `${modelLabel(radarPricePick.model)} · ${effortLabel(radarPricePick.effort)}` : "等待数据"}
+              note={radarPricePick ? `${modelLabel(radarPricePick.model)} · ${effortLabel(radarPricePick.effort)}` : t("radar.waiting")}
               price
             />
           </div>
@@ -135,16 +137,16 @@ export function CodexRadarPanel() {
               <div className="radar-panel-head">
                 <div>
                   <div className="panel-kicker">IQ HEATMAP</div>
-                  <h3>模型 × 推理强度</h3>
-                  <p>仅展示至少 30 个任务样本的 Codex 配置，单元格为 IQ</p>
+                  <h3>{t("radar.modelEffort")}</h3>
+                  <p>{t("radar.heatmapDescription")}</p>
                 </div>
-                <span>{formatSourceTime(iq?.sourceUpdatedAt)}</span>
+                <span>{formatSourceTime(iq?.sourceUpdatedAt, t)}</span>
               </div>
               {models.length ? (
                 <div className="radar-heatmap-scroll">
-                  <div className="radar-heatmap" role="table" aria-label="Codex 模型智商热力矩阵">
+                  <div className="radar-heatmap" role="table" aria-label={t("radar.heatmapAria")}>
                     <div className="radar-heatmap-row is-head" role="row">
-                      <span role="columnheader">模型</span>
+                      <span role="columnheader">{t("radar.model")}</span>
                       {EFFORTS.map((effort) => (
                         <span role="columnheader" key={effort}>{effortLabel(effort)}</span>
                       ))}
@@ -153,14 +155,14 @@ export function CodexRadarPanel() {
                       <div className="radar-heatmap-row" role="row" key={model}>
                         <strong className="radar-model-label" role="rowheader">{modelLabel(model)}</strong>
                         {EFFORTS.map((effort) => (
-                          <IqCell point={pointMap.get(`${model}:${effort}`)} key={effort} />
+                          <IqCell point={pointMap.get(`${model}:${effort}`)} key={effort} t={t} />
                         ))}
                       </div>
                     ))}
                   </div>
                 </div>
               ) : (
-                <div className="radar-empty">暂无可靠的 Codex 智商样本</div>
+                <div className="radar-empty">{t("radar.noIqSamples")}</div>
               )}
             </article>
 
@@ -168,10 +170,10 @@ export function CodexRadarPanel() {
               <div className="radar-panel-head">
                 <div>
                   <div className="panel-kicker">QUOTA RADAR</div>
-                  <h3>订阅 7 天容量</h3>
-                  <p>站方任务测量与档位推算，不是个人账号实时余额</p>
+                  <h3>{t("radar.weeklyCapacity")}</h3>
+                  <p>{t("radar.quotaDescription")}</p>
                 </div>
-                <span>{quota?.sourceUpdatedAt || "等待数据"}</span>
+                <span>{quota?.sourceUpdatedAt || t("radar.waiting")}</span>
               </div>
               {tiers.length ? (
                 <div className="quota-tier-grid">
@@ -184,14 +186,14 @@ export function CodexRadarPanel() {
                   ))}
                 </div>
               ) : (
-                <div className="radar-empty">暂未取得额度档位</div>
+                <div className="radar-empty">{t("radar.noQuota")}</div>
               )}
               {history.length >= 4 ? (
                 <div className="quota-trend-block">
                   <div className="quota-trend-head">
                     <div>
-                      <strong>20x Pro 历史容量</strong>
-                      <span>聚焦刻度，不从零起</span>
+                      <strong>{t("radar.proHistory")}</strong>
+                      <span>{t("radar.proScale")}</span>
                     </div>
                     {historyChange ? (
                       <span className={historyChange.delta < 0 ? "is-down" : "is-up"}>
@@ -222,7 +224,7 @@ export function CodexRadarPanel() {
                           stroke="hsl(var(--muted-foreground))"
                         />
                         <Tooltip
-                          formatter={(value) => [formatRadarUsd(Number(value)), "20x Pro 7d"]}
+                          formatter={(value) => [formatRadarUsd(Number(value)), t("radar.quotaSeries")]}
                           labelFormatter={(label) => String(label)}
                           contentStyle={{
                             background: "hsl(var(--card) / 0.98)",
@@ -250,7 +252,7 @@ export function CodexRadarPanel() {
 
           <div className="radar-source-note">
             <CircleDollarSign className="h-3.5 w-3.5" />
-            雷达价格优先显示为 DeepSWE 单次任务实测均价；IQ 为社区加权通过率 × 1.5。本地请求成本仍按日志口径独立统计。
+            {t("radar.sourceNote")}
           </div>
         </>
       )}
@@ -278,15 +280,25 @@ function RadarKpi({
   );
 }
 
-function IqCell({ point }: { point: RadarIqPoint | undefined }) {
+function IqCell({
+  point,
+  t,
+}: {
+  point: RadarIqPoint | undefined;
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string;
+}) {
   if (!point) return <span className="radar-iq-cell is-empty" role="cell">—</span>;
   const level = Math.max(0.08, Math.min(1, point.iq / 115));
   const title = [
     `${modelLabel(point.model)} · ${effortLabel(point.effort)}`,
     `IQ ${point.iq.toFixed(1)}`,
-    point.averagePriceUsd == null ? null : `雷达实测任务均价 ${fmtUsd(point.averagePriceUsd)}`,
-    point.averageMinutes == null ? null : `平均 ${point.averageMinutes.toFixed(1)} 分钟`,
-    `${point.total} 个任务样本`,
+    point.averagePriceUsd == null
+      ? null
+      : t("radar.measuredPrice", { price: fmtUsd(point.averagePriceUsd) }),
+    point.averageMinutes == null
+      ? null
+      : t("radar.averageMinutes", { minutes: point.averageMinutes.toFixed(1) }),
+    t("radar.samples", { count: point.total }),
   ].filter(Boolean).join(" · ");
   return (
     <span
@@ -320,11 +332,17 @@ function effortLabel(effort: string) {
   return EFFORT_LABELS[effort] ?? effort;
 }
 
-function formatSourceTime(value: string | undefined) {
-  if (!value) return "等待数据";
+function formatSourceTime(
+  value: string | undefined,
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string,
+) {
+  if (!value) return t("radar.waiting");
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return `${date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })} ${date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 更新`;
+  const locale = getFormatLocale();
+  const dateLabel = date.toLocaleDateString(locale, { month: "numeric", day: "numeric" });
+  const timeLabel = date.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+  return t("radar.updatedAt", { date: `${dateLabel} ${timeLabel}` });
 }
 
 function compactHistoryLabel(value: string) {
@@ -351,7 +369,7 @@ function formatSigned(value: number) {
 
 function formatRadarUsd(value: number) {
   if (value < 1_000) return fmtUsd(value);
-  return new Intl.NumberFormat("en-US", {
+  return new Intl.NumberFormat(getFormatLocale(), {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,

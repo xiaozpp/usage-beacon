@@ -6,6 +6,7 @@ import {
   BarChart3,
   CircleDollarSign,
   Download,
+  Languages,
   LayoutGrid,
   RefreshCw,
   SlidersHorizontal,
@@ -26,6 +27,8 @@ import {
   usageKeys,
 } from "../lib/hooks";
 import { exportUsageData, importUsageData } from "../lib/api";
+import { fmtInt, getFormatLocale } from "../lib/format";
+import { useI18n, type TranslationKey } from "../lib/i18n";
 import { UsageHero } from "./UsageHero";
 import { UsageInsights } from "./UsageInsights";
 import { CodexRadarPanel } from "./CodexRadarPanel";
@@ -35,14 +38,14 @@ import { ProviderStatsTable } from "./ProviderStatsTable";
 import { RequestLogTable } from "./RequestLogTable";
 import { AppBrandIcon, type AppBrandIconName } from "./AppBrandIcon";
 
-const PRESETS: { label: string; value: RangePreset }[] = [
-  { label: "今天", value: "today" },
-  { label: "24h", value: "1d" },
-  { label: "7天", value: "7d" },
-  { label: "14天", value: "14d" },
-  { label: "30天", value: "30d" },
-  { label: "90天", value: "90d" },
-  { label: "全部", value: "all" },
+const PRESETS: { labelKey: TranslationKey; value: RangePreset }[] = [
+  { labelKey: "range.today", value: "today" },
+  { labelKey: "range.24h", value: "1d" },
+  { labelKey: "range.7d", value: "7d" },
+  { labelKey: "range.14d", value: "14d" },
+  { labelKey: "range.30d", value: "30d" },
+  { labelKey: "range.90d", value: "90d" },
+  { labelKey: "range.all", value: "all" },
 ];
 
 const APP_FILTERS = [
@@ -60,17 +63,13 @@ const APP_FILTERS = [
   { value: "zcode", label: "ZCode", icon: "zcode", providerName: "ZCode (Session)" },
 ] as const;
 
-const REFRESH_INTERVALS = [
-  { label: "关闭", value: 0 },
-  { label: "5s", value: 5_000 },
-  { label: "30s", value: 30_000 },
-  { label: "60s", value: 60_000 },
-];
+const REFRESH_INTERVALS = [0, 5_000, 30_000, 60_000];
 
 type StatsTab = "providers" | "models";
 type AppFilter = (typeof APP_FILTERS)[number]["value"];
 
 export function Dashboard() {
+  const { language, setLanguage, t } = useI18n();
   useUsageEventBridge();
   const queryClient = useQueryClient();
 
@@ -223,10 +222,14 @@ export function Dashboard() {
       await queryClient.invalidateQueries({ queryKey: usageKeys.pricing });
       await refreshUsageQueries();
       toast.success(
-        `在线价格已更新 ${result.updatedModels} 个模型，新增 ${result.addedModels} 个，回填 ${result.recostedRecords} 条记录`,
+        t("toast.pricingUpdated", {
+          updated: fmtInt(result.updatedModels),
+          added: fmtInt(result.addedModels),
+          recosted: fmtInt(result.recostedRecords),
+        }),
       );
     } catch (error) {
-      toast.error(`在线价格更新失败：${getErrorMessage(error)}，继续使用本地价格缓存`);
+      toast.error(t("toast.pricingFailed", { error: getErrorMessage(error) }));
     }
   };
 
@@ -258,9 +261,9 @@ export function Dashboard() {
       link.click();
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
-      toast.success(`已导出 ${payload.recordCount.toLocaleString("zh-CN")} 条记录`);
+      toast.success(t("toast.exported", { count: fmtInt(payload.recordCount) }));
     } catch (error) {
-      toast.error(`导出失败：${getErrorMessage(error)}`);
+      toast.error(t("toast.exportFailed", { error: getErrorMessage(error) }));
     } finally {
       setIsTransferring(false);
     }
@@ -272,7 +275,7 @@ export function Dashboard() {
     input.value = "";
     if (!file) return;
     if (file.size > 250 * 1024 * 1024) {
-      toast.error("导入文件不能超过 250MB");
+      toast.error(t("toast.importTooLarge"));
       return;
     }
 
@@ -281,10 +284,13 @@ export function Dashboard() {
       const result = await importUsageData(await file.text());
       await queryClient.invalidateQueries({ queryKey: usageKeys.all });
       toast.success(
-        `合并完成：新增 ${result.imported.toLocaleString("zh-CN")} 条，跳过 ${result.skipped.toLocaleString("zh-CN")} 条重复记录`,
+        t("toast.imported", {
+          imported: fmtInt(result.imported),
+          skipped: fmtInt(result.skipped),
+        }),
       );
     } catch (error) {
-      toast.error(`导入失败：${getErrorMessage(error)}`);
+      toast.error(t("toast.importFailed", { error: getErrorMessage(error) }));
     } finally {
       setIsTransferring(false);
     }
@@ -317,14 +323,51 @@ export function Dashboard() {
                 LIVE / USAGE PULSE
               </div>
               <h1 className="dashboard-title">
-                使用统计 <span>CONTROL CENTER</span>
+                {t("dashboard.title")} <span>CONTROL CENTER</span>
               </h1>
-              <p className="dashboard-subtitle">查看 AI 模型的使用情况和成本统计</p>
+              <p className="dashboard-subtitle">{t("dashboard.subtitle")}</p>
             </div>
           </div>
-          <div className="system-pill self-start lg:self-auto">
-            <span className={`system-dot ${isRefreshing ? "is-busy" : ""}`} />
-            {isRefreshing ? "实时同步中" : "数据已就绪"}
+          <div className="flex items-center gap-2 self-start lg:self-auto">
+            <div
+              className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-card p-0.5 shadow-sm"
+              role="group"
+              aria-label={t("language.select")}
+            >
+              <Languages className="mx-1 h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+              <button
+                type="button"
+                className={`rounded-md px-2 py-1 text-[11px] font-semibold transition-colors ${
+                  language === "zh-CN"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+                aria-pressed={language === "zh-CN"}
+                aria-label={t("language.zh")}
+                title={t("language.zh")}
+                onClick={() => setLanguage("zh-CN")}
+              >
+                中
+              </button>
+              <button
+                type="button"
+                className={`rounded-md px-2 py-1 text-[11px] font-semibold transition-colors ${
+                  language === "en-US"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+                aria-pressed={language === "en-US"}
+                aria-label={t("language.en")}
+                title={t("language.en")}
+                onClick={() => setLanguage("en-US")}
+              >
+                EN
+              </button>
+            </div>
+            <div className="system-pill">
+              <span className={`system-dot ${isRefreshing ? "is-busy" : ""}`} />
+              {isRefreshing ? t("dashboard.statusRefreshing") : t("dashboard.statusReady")}
+            </div>
           </div>
         </header>
 
@@ -336,7 +379,7 @@ export function Dashboard() {
               </div>
               <div>
                 <div className="control-caption-title">FILTER MATRIX</div>
-                <div className="control-caption-subtitle">选择设备、应用、来源和时间窗口</div>
+                <div className="control-caption-subtitle">{t("filters.subtitle")}</div>
               </div>
             </div>
             <span className="control-panel-hint">MULTI-DEVICE / LOCAL</span>
@@ -344,23 +387,28 @@ export function Dashboard() {
 
           <div className="flex flex-wrap items-center gap-2">
             <select
-              aria-label="按设备筛选"
+              aria-label={t("filters.byDevice")}
               value={deviceId}
               onChange={(event) => setDeviceId(event.target.value)}
               className="control-select device-select"
             >
-              <option value="">全部设备（汇总）</option>
+              <option value="">{t("filters.allDevices")}</option>
               {(devices.data ?? []).map((device) => (
                 <option key={device.id} value={device.id}>
                   {device.isLocal
-                    ? `本机 · ${device.name}`
-                    : `${device.name} · ${device.requestCount.toLocaleString("zh-CN")} 条`}
+                    ? t("filters.localDevice", { name: device.name })
+                    : t("filters.deviceRecords", {
+                        name: device.name,
+                        count: fmtInt(device.requestCount),
+                      })}
                 </option>
               ))}
             </select>
 
-            <div className="app-filter-group" role="group" aria-label="按应用筛选">
-              {APP_FILTERS.map(({ value, label, icon }) => (
+            <div className="app-filter-group" role="group" aria-label={t("filters.byApp")}>
+              {APP_FILTERS.map(({ value, icon }) => {
+                const label = getAppFilterLabel(value, t);
+                return (
                 <button
                   key={value}
                   type="button"
@@ -378,16 +426,17 @@ export function Dashboard() {
                     <LayoutGrid className="h-4 w-4" />
                   )}
                 </button>
-              ))}
+                );
+              })}
             </div>
 
             <select
-              aria-label="按来源筛选"
+              aria-label={t("filters.bySource")}
               value={providerName}
               onChange={(event) => changeProviderName(event.target.value)}
               className="control-select"
             >
-              <option value="">全部来源</option>
+              <option value="">{t("filters.allSources")}</option>
               {providerOptions.map((name) => (
                 <option key={name} value={name}>
                   {name}
@@ -396,12 +445,12 @@ export function Dashboard() {
             </select>
 
             <select
-              aria-label="按模型筛选"
+              aria-label={t("filters.byModel")}
               value={model}
               onChange={(event) => setModel(event.target.value)}
               className="control-select"
             >
-              <option value="">全部模型</option>
+              <option value="">{t("filters.allModels")}</option>
               {modelOptions.map((name) => (
                 <option key={name} value={name}>
                   {name}
@@ -410,19 +459,19 @@ export function Dashboard() {
             </select>
 
             <select
-              aria-label="自动刷新间隔"
+              aria-label={t("filters.autoRefresh")}
               value={refreshIntervalMs}
               onChange={(event) => setRefreshIntervalMs(Number(event.target.value))}
               title={
                 refreshIntervalMs > 0
-                  ? `每 ${refreshIntervalMs / 1000} 秒自动刷新统计数据`
-                  : "已关闭自动刷新"
+                  ? t("filters.refreshEvery", { seconds: refreshIntervalMs / 1000 })
+                  : t("filters.refreshOff")
               }
               className="control-select w-[78px] min-w-0"
             >
-              {REFRESH_INTERVALS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
+              {REFRESH_INTERVALS.map((value) => (
+                <option key={value} value={value}>
+                  {value === 0 ? t("refresh.off") : `${value / 1000}s`}
                 </option>
               ))}
             </select>
@@ -436,31 +485,31 @@ export function Dashboard() {
                     range.preset === p.value ? "is-active" : ""
                   }`}
                 >
-                  {p.label}
+                  {t(p.labelKey)}
                 </button>
               ))}
             </div>
 
-            <div className="transfer-button-group" role="group" aria-label="多设备数据迁移">
+            <div className="transfer-button-group" role="group" aria-label={t("filters.transfer")}>
               <button
                 type="button"
                 onClick={() => void handleExport()}
                 disabled={isTransferring}
                 className="transfer-button"
-                title="导出全部设备记录，复制到其他电脑后导入"
+                title={t("filters.exportTitle")}
               >
                 <Download className="h-3.5 w-3.5" />
-                导出
+                {t("filters.export")}
               </button>
               <button
                 type="button"
                 onClick={() => importInputRef.current?.click()}
                 disabled={isTransferring}
                 className="transfer-button"
-                title="导入其他电脑导出的 JSON，自动跳过重复记录"
+                title={t("filters.importTitle")}
               >
                 <Upload className="h-3.5 w-3.5" />
-                导入
+                {t("filters.import")}
               </button>
               <input
                 ref={importInputRef}
@@ -476,12 +525,12 @@ export function Dashboard() {
               onClick={() => void handleSync()}
               disabled={sync.isFetching}
               className="sync-button"
-              title="立即同步本地会话日志"
+              title={t("filters.syncTitle")}
             >
               <RefreshCw
                 className={`h-3.5 w-3.5 ${sync.isFetching ? "animate-spin" : ""}`}
               />
-              {sync.isFetching ? "同步中..." : "同步"}
+              {sync.isFetching ? t("filters.syncing") : t("filters.sync")}
             </button>
 
             <button
@@ -489,12 +538,14 @@ export function Dashboard() {
               onClick={() => void handleRefreshPricing()}
               disabled={refreshPricing.isPending}
               className="sync-button"
-              title="从公开在线目录更新 API Token 价格，不改变用量取数"
+              title={t("filters.refreshPricingTitle")}
             >
               <CircleDollarSign
                 className={`h-3.5 w-3.5 ${refreshPricing.isPending ? "animate-spin" : ""}`}
               />
-              {refreshPricing.isPending ? "价格中..." : "更新价格"}
+              {refreshPricing.isPending
+                ? t("filters.refreshingPricing")
+                : t("filters.refreshPricing")}
             </button>
           </div>
         </section>
@@ -504,7 +555,7 @@ export function Dashboard() {
             role="alert"
             className="alert-panel text-xs"
           >
-            使用统计加载失败：{getErrorMessage(loadError)}。请点击“同步”重试。
+            {t("status.loadError", { error: getErrorMessage(loadError) })}
           </div>
         )}
 
@@ -513,47 +564,61 @@ export function Dashboard() {
           <div className="status-panel flex-wrap">
             <div className="flex items-center gap-2">
               {sync.isFetching ? (
-                <span className="text-primary">正在同步本地会话日志...</span>
+                <span className="text-primary">{t("status.syncingLogs")}</span>
               ) : sync.data ? (
                 <>
                   {sync.data.imported > 0 ? (
                     <span>
-                      本次同步: 导入 {sync.data.imported} 条 / 跳过{" "}
-                      {sync.data.skipped} 条 / 扫描 {sync.data.filesScanned} 个文件
+                      {t("status.syncImported", {
+                        imported: fmtInt(sync.data.imported),
+                        skipped: fmtInt(sync.data.skipped),
+                        files: fmtInt(sync.data.filesScanned),
+                      })}
                     </span>
                   ) : (
-                    <span>已是最新 (扫描 {sync.data.filesScanned} 个文件)</span>
+                    <span>{t("status.syncLatest", { files: fmtInt(sync.data.filesScanned) })}</span>
                   )}
                   {sync.data.errors.length > 0 && (
-                    <span className="text-red-500">· {sync.data.errors.length} 个错误</span>
+                    <span className="text-red-500">
+                      · {t("status.syncErrors", { count: fmtInt(sync.data.errors.length) })}
+                    </span>
                   )}
                 </>
               ) : null}
               {isRefreshing && !sync.isFetching && (
-                <span className="text-primary">正在刷新统计...</span>
+                <span className="text-primary">{t("status.refreshingStats")}</span>
               )}
               {refreshPricing.isPending && (
-                <span className="text-primary">正在联网更新价格...</span>
+                <span className="text-primary">{t("status.refreshingPricing")}</span>
               )}
             </div>
             <div className="flex items-center gap-2">
-              {refreshIntervalMs > 0 && <span>每 {refreshIntervalMs / 1000}s 自动刷新</span>}
-              {lastUpdatedAt > 0 && <span>最近更新 {formatTime(lastUpdatedAt)}</span>}
+              {refreshIntervalMs > 0 && (
+                <span>{t("status.autoRefresh", { seconds: refreshIntervalMs / 1000 })}</span>
+              )}
+              {lastUpdatedAt > 0 && (
+                <span>{t("status.lastUpdated", { time: formatTime(lastUpdatedAt) })}</span>
+              )}
             </div>
             {pricingCacheSummary.modelCount > 0 && (
               <div
                 className="flex items-center gap-1.5 text-xs"
-                title="在线价格成功后会按模型写入本地缓存；成本计算只读取本地缓存"
+                title={t("status.pricingTitle")}
               >
                 <CircleDollarSign className="h-3.5 w-3.5 text-primary" />
                 <span>
-                  价格缓存：在线 {pricingCacheSummary.liveModels} 个 / 回退 {pricingCacheSummary.fallbackModels} 个
+                  {t("status.pricingCache", {
+                    live: fmtInt(pricingCacheSummary.liveModels),
+                    fallback: fmtInt(pricingCacheSummary.fallbackModels),
+                  })}
                 </span>
                 <span>·</span>
                 <span>
                   {pricingCacheSummary.latestFetchedAt
-                    ? `${formatTime(pricingCacheSummary.latestFetchedAt * 1000)} 更新`
-                    : "尚未联网，使用本地回退价"}
+                    ? t("status.pricingUpdated", {
+                        time: formatTime(pricingCacheSummary.latestFetchedAt * 1000),
+                      })
+                    : t("status.pricingFallback")}
                 </span>
               </div>
             )}
@@ -590,23 +655,19 @@ export function Dashboard() {
           isLoading={trends.isLoading}
           startDate={range.start}
           endDate={range.end}
-          rangeLabel={
-            range.preset === "today"
-              ? "当天"
-              : PRESETS.find((preset) => preset.value === range.preset)?.label ?? "自定义"
-          }
+          rangeLabel={getRangeLabel(range.preset, t)}
         />
 
         {/* 维度统计：参考 CC Switch，按供应商/模型切换查看 */}
         <section className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="panel-kicker">BREAKDOWN / DIMENSIONS</div>
-              <div className="mt-1 text-xs text-muted-foreground">按供应商或模型查看细分</div>
+              <div className="panel-kicker">{t("breakdown.kicker")}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{t("breakdown.subtitle")}</div>
             </div>
             <div
               role="tablist"
-              aria-label="统计维度"
+              aria-label={t("breakdown.aria")}
               className="tab-switcher"
             >
             <button
@@ -619,7 +680,7 @@ export function Dashboard() {
               }`}
             >
               <Activity className="h-3.5 w-3.5" />
-              供应商统计
+              {t("breakdown.providers")}
             </button>
             <button
               type="button"
@@ -631,7 +692,7 @@ export function Dashboard() {
               }`}
             >
               <BarChart3 className="h-3.5 w-3.5" />
-              模型统计
+              {t("breakdown.models")}
             </button>
             </div>
           </div>
@@ -660,11 +721,29 @@ function uniqueNames(values: Array<string | undefined> | undefined, selected: st
 }
 
 function formatTime(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString([], {
+  return new Date(timestamp).toLocaleTimeString(getFormatLocale(), {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+function getAppFilterLabel(
+  value: AppFilter,
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string,
+): string {
+  return value === "all"
+    ? t("filters.allApps")
+    : APP_FILTERS.find((filter) => filter.value === value)?.label ?? value;
+}
+
+function getRangeLabel(
+  preset: RangePreset,
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string,
+): string {
+  if (preset === "today") return t("range.todayLabel");
+  const range = PRESETS.find((item) => item.value === preset);
+  return range ? t(range.labelKey) : t("range.custom");
 }
 
 function getErrorMessage(error: unknown): string {

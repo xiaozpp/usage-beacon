@@ -2,6 +2,7 @@ import { X } from "lucide-react";
 import type { RequestLogDetail } from "../types/usage";
 import { useRequestDetail } from "../lib/hooks";
 import { fmtDateTime, fmtLatency, fmtTokens, fmtUsd } from "../lib/format";
+import { useI18n } from "../lib/i18n";
 
 interface Props {
   requestId: string | null;
@@ -9,6 +10,7 @@ interface Props {
 }
 
 export function RequestDetailDialog({ requestId, onClose }: Props) {
+  const { t } = useI18n();
   const { data, isLoading, error } = useRequestDetail(requestId);
 
   if (!requestId) return null;
@@ -26,12 +28,13 @@ export function RequestDetailDialog({ requestId, onClose }: Props) {
         <div className="flex items-center justify-between border-b border-border px-4 py-3.5">
           <div>
             <div className="panel-kicker">EVENT INSPECTOR</div>
-            <h2 className="panel-title">请求详情</h2>
+            <h2 className="panel-title">{t("detail.title")}</h2>
           </div>
           <button
             onClick={onClose}
             className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            aria-label="关闭"
+            aria-label={t("detail.close")}
+            title={t("detail.close")}
           >
             <X className="h-4 w-4" />
           </button>
@@ -41,15 +44,15 @@ export function RequestDetailDialog({ requestId, onClose }: Props) {
         <div className="p-4">
           {isLoading ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
-              加载中...
+              {t("common.loading")}
             </div>
           ) : error ? (
             <div className="py-8 text-center text-sm text-red-500">
-              加载失败: {String(error)}
+              {t("detail.loadError", { error: String(error) })}
             </div>
           ) : !data ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
-              未找到数据
+              {t("detail.notFound")}
             </div>
           ) : (
             <DetailBody detail={data} />
@@ -61,56 +64,57 @@ export function RequestDetailDialog({ requestId, onClose }: Props) {
 }
 
 function DetailBody({ detail }: { detail: RequestLogDetail }) {
+  const { t } = useI18n();
   return (
     <div className="space-y-4 text-sm">
-      <Section title="基本信息">
-        <Field label="请求 ID" value={detail.requestId} mono />
-        <Field label="Provider" value={detail.providerName} />
-        <Field label="App Type" value={detail.appType} />
-        <Field label="数据来源" value={detail.dataSource} />
-        <Field label="时间" value={fmtDateTime(detail.createdAt)} />
+      <Section title={t("detail.basic")}>
+        <Field label={t("detail.requestId")} value={detail.requestId} mono />
+        <Field label={t("detail.provider")} value={detail.providerName} />
+        <Field label={t("detail.appType")} value={detail.appType} />
+        <Field label={t("detail.dataSource")} value={detail.dataSource} />
+        <Field label={t("detail.time")} value={fmtDateTime(detail.createdAt)} />
       </Section>
 
-      <Section title="模型与计费">
-        <Field label="模型" value={detail.model} mono />
+      <Section title={t("detail.modelBilling")}>
+        <Field label={t("detail.model")} value={detail.model} mono />
         {detail.requestModel && (
-          <Field label="请求模型" value={detail.requestModel} mono />
+          <Field label={t("detail.requestModel")} value={detail.requestModel} mono />
         )}
         {detail.pricingModel && (
-          <Field label="计价模型" value={detail.pricingModel} mono />
+          <Field label={t("detail.pricingModel")} value={detail.pricingModel} mono />
         )}
-        <Field label="成本倍率" value={detail.costMultiplier} />
-        <Field label="流式" value={detail.isStreaming ? "是" : "否"} />
+        <Field label={t("detail.costMultiplier")} value={detail.costMultiplier} />
+        <Field label={t("detail.streaming")} value={detail.isStreaming ? t("common.yes") : t("common.no")} />
       </Section>
 
-      <Section title="Token 使用量">
-        <Field label="新增输入" value={fmtTokens(detail.freshInputTokens)} />
-        <Field label="原始输入" value={fmtTokens(detail.inputTokens)} />
-        <Field label="输出" value={fmtTokens(detail.outputTokens)} />
-        <Field label="缓存读" value={fmtTokens(detail.cacheReadTokens)} />
-        <Field label="缓存写" value={fmtTokens(detail.cacheCreationTokens)} />
+      <Section title={t("detail.tokenUsage")}>
+        <Field label={t("hero.input")} value={fmtTokens(detail.freshInputTokens)} />
+        <Field label={t("detail.rawInput")} value={fmtTokens(detail.inputTokens)} />
+        <Field label={t("hero.output")} value={fmtTokens(detail.outputTokens)} />
+        <Field label={t("hero.cacheRead")} value={fmtTokens(detail.cacheReadTokens)} />
+        <Field label={t("hero.cacheCreation")} value={fmtTokens(detail.cacheCreationTokens)} />
       </Section>
 
-      <Section title="成本明细 (USD)">
-        <Field label="输入成本" value={fmtUsd(detail.inputCostUsd)} />
-        <Field label="输出成本" value={fmtUsd(detail.outputCostUsd)} />
-        <Field label="缓存读成本" value={fmtUsd(detail.cacheReadCostUsd)} />
-        <Field label="缓存写成本" value={fmtUsd(detail.cacheCreationCostUsd)} />
+      <Section title={t("detail.costDetails")}>
+        <Field label={t("detail.inputCost")} value={fmtUsd(detail.inputCostUsd)} />
+        <Field label={t("detail.outputCost")} value={fmtUsd(detail.outputCostUsd)} />
+        <Field label={t("detail.cacheReadCost")} value={fmtUsd(detail.cacheReadCostUsd)} />
+        <Field label={t("detail.cacheWriteCost")} value={fmtUsd(detail.cacheCreationCostUsd)} />
         <Field
-          label="总成本"
+          label={t("detail.totalCost")}
           value={fmtUsd(detail.totalCostUsd)}
           emphasize
         />
       </Section>
 
-      <Section title="响应状态">
-        <Field label="状态码" value={String(detail.statusCode)} />
-        <Field label="耗时" value={fmtLatency(detail.latencyMs)} />
+      <Section title={t("detail.responseStatus")}>
+        <Field label={t("detail.statusCode")} value={String(detail.statusCode)} />
+        <Field label={t("detail.latency")} value={fmtLatency(detail.latencyMs)} />
         {detail.sessionId && (
-          <Field label="会话 ID" value={detail.sessionId} mono />
+          <Field label={t("detail.sessionId")} value={detail.sessionId} mono />
         )}
         {detail.errorMessage && (
-          <Field label="错误信息" value={detail.errorMessage} />
+          <Field label={t("detail.errorMessage")} value={detail.errorMessage} />
         )}
       </Section>
     </div>

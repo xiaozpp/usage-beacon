@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import type { UsageSummary } from "../types/usage";
 import { fmtInt, fmtPercent, fmtTokens, fmtUsd } from "../lib/format";
+import { useI18n } from "../lib/i18n";
 import { cn } from "../lib/utils";
 import { AppBrandIcon, type AppBrandIconName } from "./AppBrandIcon";
 
@@ -27,6 +28,7 @@ const APP_THEME: Record<string, { label: string; icon: AppBrandIconName; color: 
 };
 
 export function UsageHero({ summary, isLoading, appType }: Props) {
+  const { t } = useI18n();
   const theme = appType ? APP_THEME[appType] : undefined;
   const cacheHitRate = summary?.cacheHitRate ?? 0;
   const cacheWriteUnavailable =
@@ -51,7 +53,7 @@ export function UsageHero({ summary, isLoading, appType }: Props) {
               <div className="hero-kicker mb-2 flex items-center gap-1.5">
                 {theme && <span className={cn("font-semibold", theme.color)}>{theme.label}</span>}
                 {theme && <span className="text-muted-foreground/40">•</span>}
-                <span>真实消耗 Tokens</span>
+                <span>{t("hero.realTokens")}</span>
               </div>
               <div className="flex items-baseline gap-2">
                 <span className="hero-primary-value tabular-nums">
@@ -68,7 +70,7 @@ export function UsageHero({ summary, isLoading, appType }: Props) {
 
           <div className="hero-stat-group">
             <div className="flex flex-col">
-              <span className="hero-stat-label">总请求数</span>
+              <span className="hero-stat-label">{t("hero.totalRequests")}</span>
               <span className="hero-stat-value tabular-nums">
                 <Zap className="h-3.5 w-3.5 text-blue-500" />
                 {isLoading ? "..." : summary ? fmtInt(summary.totalRequests) : "-"}
@@ -76,7 +78,7 @@ export function UsageHero({ summary, isLoading, appType }: Props) {
             </div>
             <div className="hero-stat-divider" />
             <div className="flex flex-col">
-              <span className="hero-stat-label">总成本</span>
+              <span className="hero-stat-label">{t("hero.totalCost")}</span>
               <span className="hero-stat-value tabular-nums text-emerald-300">
                 {isLoading ? "..." : summary ? fmtUsd(summary.totalCost) : "-"}
               </span>
@@ -87,36 +89,42 @@ export function UsageHero({ summary, isLoading, appType }: Props) {
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
           <MiniStat
             icon={<ArrowDownToLine className="h-3.5 w-3.5" />}
-            label="新增输入"
+            label={t("hero.input")}
             value={summary ? fmtTokens(summary.inputTokens) : "-"}
             accent="text-blue-500"
             isLoading={isLoading}
           />
           <MiniStat
             icon={<ArrowUpFromLine className="h-3.5 w-3.5" />}
-            label="Output"
+            label={t("hero.output")}
             value={summary ? fmtTokens(summary.outputTokens) : "-"}
             accent="text-violet-500"
             isLoading={isLoading}
           />
           <MiniStat
             icon={<Database className="h-3.5 w-3.5" />}
-            label="缓存创建"
-            value={cacheWriteUnavailable ? "N/A" : summary ? fmtTokens(summary.cacheCreationTokens) : "-"}
+            label={t("hero.cacheCreation")}
+            value={
+              cacheWriteUnavailable
+                ? t("hero.cacheUnavailable")
+                : summary
+                  ? fmtTokens(summary.cacheCreationTokens)
+                  : "-"
+            }
             accent="text-amber-500"
             muted={cacheWriteUnavailable}
             isLoading={isLoading}
           />
           <MiniStat
             icon={<Sparkles className="h-3.5 w-3.5" />}
-            label="缓存命中"
+            label={t("hero.cacheRead")}
             value={summary ? fmtTokens(summary.cacheReadTokens) : "-"}
             accent="text-emerald-500"
             isLoading={isLoading}
           />
           <div className="metric-tile col-span-2 flex flex-col justify-center lg:col-span-1">
             <div className="mb-2 flex items-center justify-between text-[11px]">
-              <span className="metric-tile-label mb-0">缓存命中率</span>
+              <span className="metric-tile-label mb-0">{t("hero.cacheHitRate")}</span>
               <span className="font-bold tabular-nums text-emerald-300">
                 {summary && !isLoading ? fmtPercent(cacheHitRate) : "-"}
               </span>

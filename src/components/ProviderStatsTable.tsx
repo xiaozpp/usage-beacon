@@ -1,5 +1,6 @@
 import type { ProviderStats as ProviderStatsType } from "../types/usage";
 import { fmtInt, fmtLatency, fmtPercent, fmtTokens, fmtUsd } from "../lib/format";
+import { useI18n } from "../lib/i18n";
 
 interface Props {
   data: ProviderStatsType[] | undefined;
@@ -7,36 +8,37 @@ interface Props {
 }
 
 export function ProviderStatsTable({ data, isLoading }: Props) {
+  const { t } = useI18n();
   const rows = data ?? [];
 
   return (
     <div className="data-panel">
       <div className="data-panel-header">
-        <h2 className="panel-title mt-0">供应商统计</h2>
+        <h2 className="panel-title mt-0">{t("stats.providerTitle")}</h2>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="table-head">
             <tr className="border-b border-border text-left">
-              <th className="px-4 py-2 font-medium">供应商</th>
-              <th className="px-4 py-2 text-right font-medium">请求数</th>
-              <th className="px-4 py-2 text-right font-medium">真实 Tokens</th>
-              <th className="px-4 py-2 text-right font-medium">总成本</th>
-              <th className="px-4 py-2 text-right font-medium">成功率</th>
-              <th className="px-4 py-2 text-right font-medium">平均延迟</th>
+              <th className="px-4 py-2 font-medium">{t("stats.provider")}</th>
+              <th className="px-4 py-2 text-right font-medium">{t("stats.requests")}</th>
+              <th className="px-4 py-2 text-right font-medium">{t("stats.realTokens")}</th>
+              <th className="px-4 py-2 text-right font-medium">{t("stats.totalCost")}</th>
+              <th className="px-4 py-2 text-right font-medium">{t("stats.successRate")}</th>
+              <th className="px-4 py-2 text-right font-medium">{t("stats.avgLatency")}</th>
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  加载中...
+                  {t("stats.loading")}
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  暂无数据
+                  {t("stats.noData")}
                 </td>
               </tr>
             ) : (

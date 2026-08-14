@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import type { DailyStats, ModelStats, ProviderStats, UsageSummary } from "../types/usage";
 import { fmtInt, fmtLatency, fmtPercent, fmtTokens, fmtUsd } from "../lib/format";
+import { useI18n, type TranslationKey } from "../lib/i18n";
 import { cn } from "../lib/utils";
 
 interface Props {
@@ -34,6 +35,7 @@ const TONE_CLASS: Record<Tone, string> = {
 };
 
 export function UsageInsights({ summary, trends, providers, models, isLoading }: Props) {
+  const { t } = useI18n();
   const totalCost = toNumber(summary?.totalCost);
   const totalRequests = summary?.totalRequests ?? 0;
   const averageCost = totalRequests > 0 ? totalCost / totalRequests : 0;
@@ -47,7 +49,7 @@ export function UsageInsights({ summary, trends, providers, models, isLoading }:
     .sort((left, right) => right.requestCount - left.requestCount)
     .slice(0, 3);
   const maxModelCost = Math.max(...rankedModels.map((row) => toNumber(row.totalCost)), 1);
-  const tokenParts = getTokenParts(summary);
+  const tokenParts = getTokenParts(summary, t);
   const tokenTotal = tokenParts.reduce((total, part) => total + part.value, 0);
   const insights = buildInsights({
     cacheHitRate,
@@ -58,56 +60,57 @@ export function UsageInsights({ summary, trends, providers, models, isLoading }:
     topModel: rankedModels[0],
     topProvider: rankedProviders[0],
     realTotalTokens: summary?.realTotalTokens ?? 0,
+    t,
   });
 
   return (
     <section className="insight-board">
       <header className="insight-board-header">
         <div>
-          <div className="panel-kicker">INTELLIGENCE LAYER</div>
-          <h2 className="panel-title">数据洞察</h2>
+          <div className="panel-kicker">{t("insights.kicker")}</div>
+          <h2 className="panel-title">{t("insights.title")}</h2>
           <p className="insight-board-subtitle">
-            从当前筛选结果自动提炼效率、稳定性和资源集中度
+            {t("insights.subtitle")}
           </p>
         </div>
         <div className="insight-board-badge">
           <Sparkles className="h-3.5 w-3.5" />
-          AUTO-DERIVED
+          {t("insights.autoDerived")}
         </div>
       </header>
 
       <div className="insight-card-grid">
         <InsightCard
           icon={<Gauge className="h-4 w-4" />}
-          label="成本效率"
+          label={t("insights.costEfficiency")}
           value={summary ? fmtUsd(averageCost) : "-"}
-          note="平均每次请求成本"
+          note={t("insights.avgRequestCost")}
           tone="cyan"
           isLoading={isLoading}
         />
         <InsightCard
           icon={<Layers className="h-4 w-4" />}
-          label="缓存收益"
+          label={t("insights.cacheBenefit")}
           value={summary ? fmtPercent(cacheHitRate) : "-"}
-          note={summary ? fmtTokens(summary.cacheReadTokens) + " tokens 被复用" : "等待数据"}
+          note={summary ? t("insights.reusedTokens", { tokens: fmtTokens(summary.cacheReadTokens) }) : t("common.waiting")}
           tone="violet"
           progress={cacheHitRate}
           isLoading={isLoading}
         />
         <InsightCard
           icon={<CheckCircle2 className="h-4 w-4" />}
-          label="稳定性"
+          label={t("insights.stability")}
           value={summary ? fmtPercent(successRate) : "-"}
-          note="请求成功率"
+          note={t("insights.successRate")}
           tone="emerald"
           progress={successRate}
           isLoading={isLoading}
         />
         <InsightCard
           icon={<TrendingUp className="h-4 w-4" />}
-          label="趋势动能"
+          label={t("insights.momentum")}
           value={trendDelta === null ? "—" : formatSignedPercent(trendDelta)}
-          note="最近两个活跃时段成本变化"
+          note={t("insights.recentCostChange")}
           tone={trendDelta !== null && trendDelta > 0 ? "amber" : "cyan"}
           isLoading={isLoading}
         />
@@ -116,11 +119,11 @@ export function UsageInsights({ summary, trends, providers, models, isLoading }:
       <div className="insight-lower-grid">
         <InsightPanel
           eyebrow="MODEL MIX"
-          title="模型贡献度"
+          title={t("insights.modelContribution")}
           icon={<Trophy className="h-4 w-4" />}
         >
           {rankedModels.length === 0 ? (
-            <EmptyInsightState isLoading={isLoading} label="模型数据积累后显示贡献排行" />
+            <EmptyInsightState isLoading={isLoading} label={t("insights.modelRankEmpty")} />
           ) : (
             <div className="leaderboard-list">
               {rankedModels.map((row, index) => {
@@ -152,7 +155,7 @@ export function UsageInsights({ summary, trends, providers, models, isLoading }:
                       </div>
                       <div className="leaderboard-meta">
                         <span>{fmtInt(row.requestCount)} requests</span>
-                        <span>{fmtPercent(share)} 成本占比</span>
+                        <span>{t("insights.costShare", { share: fmtPercent(share) })}</span>
                       </div>
                     </div>
                   </div>
@@ -164,15 +167,15 @@ export function UsageInsights({ summary, trends, providers, models, isLoading }:
 
         <InsightPanel
           eyebrow="PROVIDER HEALTH"
-          title="供应商体检"
+          title={t("insights.providerHealth")}
           icon={<Activity className="h-4 w-4" />}
         >
           {rankedProviders.length === 0 ? (
-            <EmptyInsightState isLoading={isLoading} label="供应商数据积累后显示健康度" />
+            <EmptyInsightState isLoading={isLoading} label={t("insights.providerHealthEmpty")} />
           ) : (
             <div className="provider-health-list">
               {rankedProviders.map((row) => {
-                const health = getHealth(row.successRate);
+                const health = getHealth(row.successRate, t);
                 return (
                   <div
                     className="provider-health-row"
@@ -187,7 +190,7 @@ export function UsageInsights({ summary, trends, providers, models, isLoading }:
                         <span className={cn("health-label", health.labelClass)}>{health.label}</span>
                       </div>
                       <div className="provider-health-meta">
-                        <span>{fmtPercent(row.successRate)} 成功</span>
+                        <span>{fmtPercent(row.successRate)} {t("insights.success")}</span>
                         <span className="provider-latency">
                           <Timer className="h-3 w-3" />
                           {fmtLatency(row.avgLatencyMs)}
@@ -203,24 +206,24 @@ export function UsageInsights({ summary, trends, providers, models, isLoading }:
 
         <InsightPanel
           eyebrow="TOKEN COMPOSITION"
-          title="资源构成"
+          title={t("insights.resourceComposition")}
           icon={<Layers className="h-4 w-4" />}
         >
-          <TokenComposition parts={tokenParts} total={tokenTotal} isLoading={isLoading} />
+          <TokenComposition parts={tokenParts} total={tokenTotal} isLoading={isLoading} t={t} />
         </InsightPanel>
       </div>
 
       <div className="insight-secondary-grid">
         <InsightPanel
           eyebrow="ACTIVITY RHYTHM"
-          title="活跃节奏"
+          title={t("insights.activityRhythm")}
           icon={<BarChart3 className="h-4 w-4" />}
         >
-          <ActivityRhythm trends={trends} isLoading={isLoading} />
+          <ActivityRhythm trends={trends} isLoading={isLoading} t={t} />
         </InsightPanel>
         <InsightPanel
           eyebrow="SIGNAL FEED"
-          title="关键结论"
+          title={t("insights.keyTakeaways")}
           icon={<Zap className="h-4 w-4" />}
         >
           <div className="insight-feed">
@@ -304,7 +307,8 @@ function InsightPanel({
 }
 
 function EmptyInsightState({ isLoading, label }: { isLoading: boolean; label: string }) {
-  return <div className="insight-empty">{isLoading ? "正在分析..." : label}</div>;
+  const { t } = useI18n();
+  return <div className="insight-empty">{isLoading ? t("insights.analyzing") : label}</div>;
 }
 
 type TokenPart = {
@@ -313,13 +317,16 @@ type TokenPart = {
   color: string;
 };
 
-function getTokenParts(summary: UsageSummary | undefined): TokenPart[] {
+function getTokenParts(
+  summary: UsageSummary | undefined,
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string,
+): TokenPart[] {
   return [
-    { label: "输入", value: summary?.inputTokens ?? 0, color: "hsl(var(--primary))" },
-    { label: "输出", value: summary?.outputTokens ?? 0, color: "hsl(var(--accent))" },
-    { label: "缓存读", value: summary?.cacheReadTokens ?? 0, color: "hsl(var(--success))" },
+    { label: t("insights.tokenInput"), value: summary?.inputTokens ?? 0, color: "hsl(var(--primary))" },
+    { label: t("insights.tokenOutput"), value: summary?.outputTokens ?? 0, color: "hsl(var(--accent))" },
+    { label: t("insights.tokenCacheRead"), value: summary?.cacheReadTokens ?? 0, color: "hsl(var(--success))" },
     {
-      label: "缓存写",
+      label: t("insights.tokenCacheWrite"),
       value: summary?.cacheCreationTokens ?? 0,
       color: "hsl(var(--warning))",
     },
@@ -330,13 +337,15 @@ function TokenComposition({
   parts,
   total,
   isLoading,
+  t,
 }: {
   parts: TokenPart[];
   total: number;
   isLoading: boolean;
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string;
 }) {
   if (isLoading || total <= 0) {
-    return <EmptyInsightState isLoading={isLoading} label="有 Token 数据后显示资源构成" />;
+    return <EmptyInsightState isLoading={isLoading} label={t("insights.tokenDataEmpty")} />;
   }
 
   return (
@@ -345,11 +354,11 @@ function TokenComposition({
         <div
           className="composition-ring"
           style={{ background: buildCompositionGradient(parts, total) }}
-          aria-label={"Token 构成，总计 " + fmtTokens(total)}
+          aria-label={t("insights.tokenCompositionAria", { total: fmtTokens(total) })}
         >
           <div className="composition-ring-core">
             <strong className="composition-total">{fmtTokens(total)}</strong>
-            <span className="composition-caption">总 Tokens</span>
+            <span className="composition-caption">{t("insights.totalTokens")}</span>
           </div>
         </div>
         <div className="composition-legend">
@@ -394,15 +403,17 @@ function buildCompositionGradient(parts: TokenPart[], total: number): string {
 function ActivityRhythm({
   trends,
   isLoading,
+  t,
 }: {
   trends: DailyStats[] | undefined;
   isLoading: boolean;
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string;
 }) {
   const rows = (trends ?? [])
     .filter((row) => row.requestCount > 0 || toNumber(row.totalCost) > 0)
     .slice(-12);
   if (rows.length === 0) {
-    return <EmptyInsightState isLoading={isLoading} label="有趋势数据后显示活跃节奏" />;
+    return <EmptyInsightState isLoading={isLoading} label={t("insights.activityEmpty")} />;
   }
 
   const maxRequests = Math.max(...rows.map((row) => row.requestCount), 1);
@@ -413,12 +424,12 @@ function ActivityRhythm({
 
   return (
     <div className="activity-rhythm">
-      <div className="activity-bars" aria-label="请求活跃节奏">
+      <div className="activity-bars" aria-label={t("insights.activityAria")}>
         {rows.map((row) => (
           <div
             className="activity-bar-column"
             key={row.date}
-            title={formatActivityTitle(row)}
+            title={formatActivityTitle(row, t)}
           >
             <span className="activity-bar-value">{fmtInt(row.requestCount)}</span>
             <div className="activity-bar-track">
@@ -434,7 +445,7 @@ function ActivityRhythm({
       </div>
       <div className="activity-summary">
         <span>
-          峰值 <strong>{fmtInt(peak.requestCount)}</strong> requests
+          {t("insights.peakRequests", { count: fmtInt(peak.requestCount) })}
         </span>
         <span>{formatActivityLabel(peak.date)}</span>
       </div>
@@ -447,12 +458,17 @@ function formatActivityLabel(value: string): string {
   return value.length > 10 ? value.slice(11, 16) || day : day;
 }
 
-function formatActivityTitle(row: DailyStats): string {
+function formatActivityTitle(
+  row: DailyStats,
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string,
+): string {
   return (
     formatActivityLabel(row.date) +
     " · " +
     fmtInt(row.requestCount) +
-    " requests · " +
+    " " +
+    t("common.requests") +
+    " · " +
     fmtUsd(row.totalCost)
   );
 }
@@ -478,18 +494,21 @@ function formatSignedPercent(value: number): string {
   return sign + value.toFixed(1) + "%";
 }
 
-function getHealth(successRate: number): {
+function getHealth(
+  successRate: number,
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string,
+): {
   label: string;
   labelClass: string;
   dotClass: string;
 } {
   if (successRate >= 99) {
-    return { label: "优秀", labelClass: "is-good", dotClass: "is-good" };
+    return { label: t("insights.healthGood"), labelClass: "is-good", dotClass: "is-good" };
   }
   if (successRate >= 95) {
-    return { label: "稳定", labelClass: "is-stable", dotClass: "is-stable" };
+    return { label: t("insights.healthStable"), labelClass: "is-stable", dotClass: "is-stable" };
   }
-  return { label: "观察", labelClass: "is-watch", dotClass: "is-watch" };
+  return { label: t("insights.healthWatch"), labelClass: "is-watch", dotClass: "is-watch" };
 }
 
 function buildInsights({
@@ -501,6 +520,7 @@ function buildInsights({
   topModel,
   topProvider,
   realTotalTokens,
+  t,
 }: {
   cacheHitRate: number;
   successRate: number;
@@ -510,6 +530,7 @@ function buildInsights({
   topModel: ModelStats | undefined;
   topProvider: ProviderStats | undefined;
   realTotalTokens: number;
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string;
 }): Array<{ icon: ReactNode; tone: Tone; content: ReactNode }> {
   const insights: Array<{ icon: ReactNode; tone: Tone; content: ReactNode }> = [];
 
@@ -518,11 +539,7 @@ function buildInsights({
     insights.push({
       icon: <Trophy className="h-3.5 w-3.5" />,
       tone: "violet",
-      content: (
-        <>
-          <strong>{topModel.model}</strong> 是当前成本主力，占总成本 {fmtPercent(share)}。
-        </>
-      ),
+      content: <>{t("insights.topModelConclusion", { model: topModel.model, share: fmtPercent(share) })}</>,
     });
   }
 
@@ -530,13 +547,13 @@ function buildInsights({
     insights.push({
       icon: <Layers className="h-3.5 w-3.5" />,
       tone: "emerald",
-      content: <>缓存命中率已达 {fmtPercent(cacheHitRate)}，上下文复用正在降低重复消耗。</>,
+      content: <>{t("insights.cacheGood", { rate: fmtPercent(cacheHitRate) })}</>,
     });
   } else if (realTotalTokens > 0) {
     insights.push({
       icon: <CircleAlert className="h-3.5 w-3.5" />,
       tone: "amber",
-      content: <>缓存命中率为 {fmtPercent(cacheHitRate)}，可以关注重复上下文是否偏多。</>,
+      content: <>{t("insights.cacheWatch", { rate: fmtPercent(cacheHitRate) })}</>,
     });
   }
 
@@ -544,12 +561,11 @@ function buildInsights({
     insights.push({
       icon: <Activity className="h-3.5 w-3.5" />,
       tone: successRate >= 95 ? "cyan" : "amber",
-      content: (
-        <>
-          <strong>{topProvider.providerName}</strong> 承担 {fmtInt(topProvider.requestCount)} 次请求，成功率{" "}
-          {fmtPercent(topProvider.successRate)}。
-        </>
-      ),
+      content: <>{t("insights.topProviderConclusion", {
+        provider: topProvider.providerName,
+        count: fmtInt(topProvider.requestCount),
+        rate: fmtPercent(topProvider.successRate),
+      })}</>,
     });
   }
 
@@ -557,11 +573,10 @@ function buildInsights({
     insights.push({
       icon: <TrendingUp className="h-3.5 w-3.5" />,
       tone: trendDelta > 0 ? "amber" : "cyan",
-      content: (
-        <>
-          最近一个活跃时段成本 {trendDelta > 0 ? "上升" : "下降"} {fmtPercent(Math.abs(trendDelta))}。
-        </>
-      ),
+      content: <>{t("insights.trendConclusion", {
+        direction: trendDelta > 0 ? t("insights.trendUp") : t("insights.trendDown"),
+        rate: fmtPercent(Math.abs(trendDelta)),
+      })}</>,
     });
   }
 
@@ -569,7 +584,7 @@ function buildInsights({
     insights.push({
       icon: <Sparkles className="h-3.5 w-3.5" />,
       tone: "cyan",
-      content: <>同步完成并积累数据后，这里会自动生成分析结论。</>,
+      content: <>{t("insights.emptyConclusion")}</>,
     });
   }
 

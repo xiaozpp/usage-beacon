@@ -1,7 +1,16 @@
 /// 格式化工具函数
 
-export function fmtInt(n: number): string {
-  return new Intl.NumberFormat("en-US").format(n);
+export type FormatLocale = "zh-CN" | "en-US";
+
+export function getFormatLocale(): FormatLocale {
+  if (typeof document !== "undefined" && document.documentElement.lang === "zh-CN") {
+    return "zh-CN";
+  }
+  return "en-US";
+}
+
+export function fmtInt(n: number, locale: FormatLocale = getFormatLocale()): string {
+  return new Intl.NumberFormat(locale).format(n);
 }
 
 export function fmtUsd(s: string | number): string {
@@ -12,15 +21,16 @@ export function fmtUsd(s: string | number): string {
   return `$${n.toFixed(2)}`;
 }
 
-export function fmtTokens(n: number): string {
-  if (n >= 100_000_000) return `${(n / 100_000_000).toFixed(2)}亿`;
+export function fmtTokens(n: number, locale: FormatLocale = getFormatLocale()): string {
+  if (locale === "zh-CN" && n >= 100_000_000) return `${(n / 100_000_000).toFixed(2)}亿`;
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(2)}K`;
-  return n.toString();
+  return new Intl.NumberFormat(locale).format(n);
 }
 
-export function fmtDateTime(unixSeconds: number): string {
-  return new Date(unixSeconds * 1000).toLocaleString();
+export function fmtDateTime(unixSeconds: number, locale: FormatLocale = getFormatLocale()): string {
+  return new Date(unixSeconds * 1000).toLocaleString(locale);
 }
 
 export function fmtPercent(n: number, digits = 1): string {

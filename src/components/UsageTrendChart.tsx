@@ -13,7 +13,8 @@ import {
   YAxis,
 } from "recharts";
 import type { DailyStats } from "../types/usage";
-import { fmtUsd, fmtTokens } from "../lib/format";
+import { fmtInt, fmtUsd, fmtTokens } from "../lib/format";
+import { useI18n, type TranslationKey } from "../lib/i18n";
 
 interface Props {
   data: DailyStats[] | undefined;
@@ -43,11 +44,11 @@ interface TrendPoint {
 }
 
 const SERIES = [
-  { key: "cost", label: "成本", color: "#fb7185", dashed: true },
-  { key: "cacheCreation", label: "缓存创建", color: "#fbbf24", dashed: false },
-  { key: "cacheRead", label: "缓存命中", color: "#a78bfa", dashed: false },
-  { key: "input", label: "输入", color: "#22d3ee", dashed: false },
-  { key: "output", label: "输出", color: "#34d399", dashed: false },
+  { key: "cost", labelKey: "series.cost", color: "#fb7185", dashed: true },
+  { key: "cacheCreation", labelKey: "series.cacheCreation", color: "#fbbf24", dashed: false },
+  { key: "cacheRead", labelKey: "series.cacheRead", color: "#a78bfa", dashed: false },
+  { key: "input", labelKey: "series.input", color: "#22d3ee", dashed: false },
+  { key: "output", labelKey: "series.output", color: "#34d399", dashed: false },
 ] as const;
 
 function getGranularity(startDate: number, endDate: number): Granularity {
@@ -167,7 +168,11 @@ function buildChartData(
   };
 }
 
-function TrendLegend() {
+function TrendLegend({
+  t,
+}: {
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string;
+}) {
   return (
     <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-xs">
       {SERIES.map((series) => (
@@ -180,29 +185,33 @@ function TrendLegend() {
             className={`inline-block w-5 border-t-2 ${series.dashed ? "border-dashed" : ""}`}
             style={{ borderColor: series.color }}
           />
-          {series.label}
+          {t(series.labelKey)}
         </span>
       ))}
     </div>
   );
 }
 
-function CumulativeLegend() {
+function CumulativeLegend({
+  t,
+}: {
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string;
+}) {
   const items = [
-    { label: "时段真实 Tokens", color: "#0ea5e9", kind: "bar" },
-    { label: "缓存命中", color: "#8b5cf6", kind: "line" },
-    { label: "累计真实 Tokens", color: "#f97316", kind: "line" },
+    { labelKey: "series.periodTokens" as const, color: "#0ea5e9", kind: "bar" },
+    { labelKey: "series.cacheRead" as const, color: "#8b5cf6", kind: "line" },
+    { labelKey: "series.cumulativeTokens" as const, color: "#f97316", kind: "line" },
   ];
 
   return (
     <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-xs">
       {items.map((item) => (
-        <span key={item.label} className="inline-flex items-center gap-1.5" style={{ color: item.color }}>
+        <span key={item.labelKey} className="inline-flex items-center gap-1.5" style={{ color: item.color }}>
           <span
             className={item.kind === "bar" ? "inline-block h-2.5 w-3 rounded-sm" : "inline-block w-5 border-t-2"}
             style={item.kind === "bar" ? { backgroundColor: item.color } : { borderColor: item.color }}
           />
-          {item.label}
+          {t(item.labelKey)}
         </span>
       ))}
     </div>
@@ -216,6 +225,7 @@ export function UsageTrendChart({
   endDate,
   rangeLabel,
 }: Props) {
+  const { t } = useI18n();
   const [view, setView] = useState<"detail" | "cumulative">("detail");
   const chart = data ? buildChartData(data, startDate, endDate) : null;
   const chartData = chart?.data ?? [];
@@ -229,7 +239,6 @@ export function UsageTrendChart({
     (best, point) => (!best || point.total > best.total ? point : best),
     undefined,
   );
-  const activeUnit = granularity === "hour" ? "小时" : "天";
   const hasData = activePoints.length > 0;
 
   return (
@@ -237,17 +246,17 @@ export function UsageTrendChart({
       <div className="panel-header flex items-center justify-between gap-3">
         <div>
           <div className="panel-kicker">TELEMETRY / TREND</div>
-          <h2 className="panel-title">使用趋势与峰值</h2>
+          <h2 className="panel-title">{t("trend.title")}</h2>
         </div>
         <div className="trend-toolbar">
-          <div className="trend-mode-switcher" role="group" aria-label="趋势图视图">
+          <div className="trend-mode-switcher" role="group" aria-label={t("trend.aria")}>
             <button
               type="button"
               className={`trend-mode-button ${view === "detail" ? "is-active" : ""}`}
               aria-pressed={view === "detail"}
               onClick={() => setView("detail")}
             >
-              消耗明细
+              {t("trend.detail")}
             </button>
             <button
               type="button"
@@ -255,41 +264,43 @@ export function UsageTrendChart({
               aria-pressed={view === "cumulative"}
               onClick={() => setView("cumulative")}
             >
-              峰值累计
+              {t("trend.cumulative")}
             </button>
           </div>
           <div className="panel-meta">
             {rangeLabel && <span>{rangeLabel}</span>}
-            {isLoading && <span>加载中...</span>}
+            {isLoading && <span>{t("common.loading")}</span>}
           </div>
         </div>
       </div>
       <div className="trend-summary-strip">
         <div className="trend-summary-item">
-          <span className="trend-summary-label">区间累计</span>
+          <span className="trend-summary-label">{t("trend.rangeTotal")}</span>
           <strong className="trend-summary-value">{fmtTokens(totalTokens)}</strong>
-          <span className="trend-summary-note">真实 Tokens</span>
+          <span className="trend-summary-note">{t("trend.realTokens")}</span>
         </div>
         <div className="trend-summary-item is-peak">
-          <span className="trend-summary-label">真实 Token 峰值</span>
+          <span className="trend-summary-label">{t("trend.peak")}</span>
           <strong className="trend-summary-value">{peak ? fmtTokens(peak.total) : "—"}</strong>
-          <span className="trend-summary-note">{peak?.label ?? "暂无活跃时段"}</span>
+          <span className="trend-summary-note">{peak?.label ?? t("trend.noActivePeriod")}</span>
         </div>
         <div className="trend-summary-item">
-          <span className="trend-summary-label">活跃{activeUnit}</span>
+          <span className="trend-summary-label">
+            {granularity === "hour" ? t("trend.activeHour") : t("trend.activeDay")}
+          </span>
           <strong className="trend-summary-value">{activePoints.length}</strong>
-          <span className="trend-summary-note">有请求或消耗</span>
+          <span className="trend-summary-note">{t("trend.hasUsage")}</span>
         </div>
         <div className="trend-summary-item">
-          <span className="trend-summary-label">请求总量</span>
-          <strong className="trend-summary-value">{totalRequests.toLocaleString("zh-CN")}</strong>
-          <span className="trend-summary-note">events</span>
+          <span className="trend-summary-label">{t("trend.totalRequests")}</span>
+          <strong className="trend-summary-value">{fmtInt(totalRequests)}</strong>
+          <span className="trend-summary-note">{t("common.events")}</span>
         </div>
       </div>
       <div className="chart-stage h-[360px] w-auto md:h-[400px]">
         {!hasData ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            {isLoading ? "加载中..." : "暂无数据"}
+            {isLoading ? t("common.loading") : t("trend.noData")}
           </div>
         ) : view === "detail" ? (
           <ResponsiveContainer width="100%" height="100%">
@@ -347,15 +358,15 @@ export function UsageTrendChart({
                 formatter={(value, name) => {
                   const v = typeof value === "number" ? value : Number(value) || 0;
                   const label = String(name ?? "");
-                  return [label === "成本" ? fmtUsd(v) : fmtTokens(v), label];
+                  return [label === t("series.cost") ? fmtUsd(v) : fmtTokens(v), label];
                 }}
               />
-              <Legend content={<TrendLegend />} />
+              <Legend content={<TrendLegend t={t} />} />
               <Area
                 type="monotone"
                 yAxisId="tokens"
                 dataKey="cacheRead"
-                name="缓存命中"
+                name={t("series.cacheRead")}
                 stroke="#a78bfa"
                 strokeWidth={2}
                 fill="url(#cacheReadGradient)"
@@ -366,7 +377,7 @@ export function UsageTrendChart({
                 yAxisId="cost"
                 type="monotone"
                 dataKey="cost"
-                name="成本"
+                name={t("series.cost")}
                 stroke="#fb7185"
                 strokeWidth={2}
                 strokeDasharray="4 4"
@@ -377,7 +388,7 @@ export function UsageTrendChart({
                 yAxisId="tokens"
                 type="monotone"
                 dataKey="cacheCreation"
-                name="缓存创建"
+                name={t("series.cacheCreation")}
                 stroke="#fbbf24"
                 strokeWidth={2}
                 dot={false}
@@ -387,7 +398,7 @@ export function UsageTrendChart({
                 yAxisId="tokens"
                 type="monotone"
                 dataKey="input"
-                name="输入"
+                name={t("series.input")}
                 stroke="#22d3ee"
                 strokeWidth={2}
                 dot={false}
@@ -397,7 +408,7 @@ export function UsageTrendChart({
                 yAxisId="tokens"
                 type="monotone"
                 dataKey="output"
-                name="输出"
+                name={t("series.output")}
                 stroke="#34d399"
                 strokeWidth={2}
                 dot={false}
@@ -460,11 +471,11 @@ export function UsageTrendChart({
                 cursor={{ fill: "hsl(var(--primary) / 0.055)" }}
                 formatter={(value, name) => [fmtTokens(Number(value) || 0), String(name ?? "")]}
               />
-              <Legend content={<CumulativeLegend />} />
+              <Legend content={<CumulativeLegend t={t} />} />
               <Bar
                 yAxisId="tokens"
                 dataKey="total"
-                name="时段真实 Tokens"
+                name={t("series.periodTokens")}
                 fill="url(#tokenBarGradient)"
                 radius={[6, 6, 1, 1]}
                 maxBarSize={24}
@@ -474,7 +485,7 @@ export function UsageTrendChart({
                 yAxisId="tokens"
                 type="monotone"
                 dataKey="cacheRead"
-                name="缓存命中"
+                name={t("series.cacheRead")}
                 stroke="#8b5cf6"
                 strokeWidth={2}
                 dot={false}
@@ -484,7 +495,7 @@ export function UsageTrendChart({
                 yAxisId="cumulative"
                 type="monotone"
                 dataKey="cumulative"
-                name="累计真实 Tokens"
+                name={t("series.cumulativeTokens")}
                 stroke="#f97316"
                 strokeWidth={2.5}
                 dot={false}
