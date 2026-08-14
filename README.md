@@ -148,4 +148,4 @@ Usage Beacon 是一个本地优先的 AI 编程用量分析桌面工具：把 Cl
 
 ## License
 
-The project license has not been selected yet. Add a license file before accepting outside contributions or distributing public releases.
+This project is licensed under the [MIT License](LICENSE).
