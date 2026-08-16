@@ -1,10 +1,11 @@
 //! 数据库 Schema 与初始化
 //!
-//! 仅保留 usage 子系统相关的三张表：
+//! 仅保留 usage 子系统相关的表：
 //! - proxy_request_logs: 请求明细
 //! - usage_daily_rollups: 日聚合（冷热分层）
 //! - model_pricing: 模型定价
 //! - session_log_sync: 会话日志同步进度
+//! - session_runtime_stats: 会话级运行时间统计
 
 use crate::error::Result;
 use rusqlite::Connection;
@@ -33,6 +34,8 @@ pub const DATA_SOURCE_GEMINI_SESSION: &str = "gemini_session";
 pub const DATA_SOURCE_OPENCODE_SESSION: &str = "opencode_session";
 pub const DATA_SOURCE_ZCODE_SESSION: &str = "zcode_session";
 pub const DATA_SOURCE_GROK_SESSION: &str = "grok_session";
+pub const DATA_SOURCE_DEEPSEEK_HARNESS_SESSION: &str = "deepseek_harness_session";
+pub const DATA_SOURCE_HERMES_SESSION: &str = "hermes_session";
 
 /// 跨源去重窗口（秒）：10 分钟内已有等价 proxy 行则跳过 session 行
 pub const SESSION_PROXY_DEDUP_WINDOW_SECONDS: i64 = 600;
@@ -51,6 +54,7 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
             model TEXT NOT NULL,
             request_model TEXT,
             pricing_model TEXT,
+            request_count INTEGER NOT NULL DEFAULT 1,
             input_tokens INTEGER NOT NULL DEFAULT 0,
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_read_tokens INTEGER NOT NULL DEFAULT 0,
@@ -73,7 +77,8 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
             created_at INTEGER NOT NULL,
             data_source TEXT NOT NULL DEFAULT 'proxy',
             device_id TEXT NOT NULL DEFAULT '',
-            device_name TEXT NOT NULL DEFAULT ''
+            device_name TEXT NOT NULL DEFAULT '',
+            project TEXT NOT NULL DEFAULT ''
         )",
         [],
     )?;
@@ -87,6 +92,16 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
         conn,
         "device_name",
         "ALTER TABLE proxy_request_logs ADD COLUMN device_name TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "project",
+        "ALTER TABLE proxy_request_logs ADD COLUMN project TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "request_count",
+        "ALTER TABLE proxy_request_logs ADD COLUMN request_count INTEGER NOT NULL DEFAULT 1",
     )?;
 
     conn.execute(
@@ -127,6 +142,42 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_request_logs_device_created_at
          ON proxy_request_logs(device_id, created_at DESC)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_request_logs_project_created_at
+         ON proxy_request_logs(project, created_at DESC)",
+        [],
+    )?;
+
+    // 1.1 Hermes 会话累计快照。
+    // Hermes 的 state.db 只保留按 session/model 聚合的累计计数；这里保存
+    // 上一次看到的水位，下一次同步只把增长部分写入请求明细，避免重复计数。
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS hermes_usage_sync (
+            usage_key TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            billing_provider TEXT NOT NULL DEFAULT '',
+            billing_base_url TEXT NOT NULL DEFAULT '',
+            billing_mode TEXT NOT NULL DEFAULT '',
+            task TEXT NOT NULL DEFAULT '',
+            request_count INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+            estimated_cost_usd TEXT NOT NULL DEFAULT '0',
+            actual_cost_usd TEXT NOT NULL DEFAULT '0',
+            last_seen REAL NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hermes_usage_sync_session
+         ON hermes_usage_sync(session_id)",
         [],
     )?;
 
@@ -199,7 +250,48 @@ pub fn create_tables(conn: &Connection) -> Result<()> {
         [],
     )?;
 
-    // 5. 设置表
+    // 5. DeepSeek Harness 会话级运行统计。
+    //
+    // 这张表与 proxy_request_logs 保持不同粒度：请求表保存每条 usage，
+    // 本表保存官方 session-stats 的 turns/steps/耗时折叠结果，避免把一
+    // 个会话的耗时重复写入每条请求。
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS session_runtime_stats (
+            data_source TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            model TEXT NOT NULL DEFAULT '',
+            project TEXT NOT NULL DEFAULT '',
+            source_path TEXT NOT NULL DEFAULT '',
+            turns INTEGER NOT NULL DEFAULT 0,
+            steps INTEGER NOT NULL DEFAULT 0,
+            llm_ms INTEGER NOT NULL DEFAULT 0,
+            tool_ms INTEGER NOT NULL DEFAULT 0,
+            ttft_ms INTEGER NOT NULL DEFAULT 0,
+            ttft_steps INTEGER NOT NULL DEFAULT 0,
+            decode_ms INTEGER NOT NULL DEFAULT 0,
+            decode_tokens INTEGER NOT NULL DEFAULT 0,
+            started_at INTEGER NOT NULL DEFAULT 0,
+            last_event_at INTEGER NOT NULL DEFAULT 0,
+            device_id TEXT NOT NULL DEFAULT '',
+            device_name TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (data_source, device_id, session_id)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_runtime_stats_started_at
+         ON session_runtime_stats(started_at)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_runtime_stats_device_started_at
+         ON session_runtime_stats(device_id, started_at DESC)",
+        [],
+    )?;
+
+    // 6. 设置表
     conn.execute(
         "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)",
         [],

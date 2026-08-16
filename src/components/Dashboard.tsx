@@ -20,6 +20,7 @@ import {
   useDevices,
   useModelPricing,
   useModelStats,
+  useProjectStats,
   useProviderStats,
   useRefreshModelPricing,
   useSyncSessionLogs,
@@ -37,6 +38,8 @@ import { ModelStatsTable } from "./ModelStatsTable";
 import { ProviderStatsTable } from "./ProviderStatsTable";
 import { RequestLogTable } from "./RequestLogTable";
 import { AppBrandIcon, type AppBrandIconName } from "./AppBrandIcon";
+import { SyncHealthPanel } from "./SyncHealthPanel";
+import { UsageBreakdownTable } from "./UsageBreakdownTable";
 
 const PRESETS: { labelKey: TranslationKey; value: RangePreset }[] = [
   { labelKey: "range.today", value: "today" },
@@ -61,9 +64,23 @@ const APP_FILTERS = [
   },
   { value: "opencode", label: "OpenCode", icon: "opencode", providerName: "OpenCode (Session)" },
   { value: "zcode", label: "ZCode", icon: "zcode", providerName: "ZCode (Session)" },
+  {
+    value: "deepseek_harness",
+    label: "DeepSeek Harness",
+    icon: "deepseek",
+    providerName: "DeepSeek Harness (Session)",
+  },
+  { value: "hermes", label: "Hermes", icon: "hermes", providerName: "Hermes (Session)" },
 ] as const;
 
-const REFRESH_INTERVALS = [0, 5_000, 30_000, 60_000];
+const REFRESH_INTERVALS = [0, 10 * 60_000, 30 * 60_000, 60 * 60_000];
+
+function formatRefreshInterval(value: number) {
+  if (value <= 0) return "";
+  if (value % (60 * 60_000) === 0) return `${value / (60 * 60_000)}h`;
+  if (value % 60_000 === 0) return `${value / 60_000}m`;
+  return `${value / 1_000}s`;
+}
 
 type StatsTab = "providers" | "models";
 type AppFilter = (typeof APP_FILTERS)[number]["value"];
@@ -80,7 +97,7 @@ export function Dashboard() {
   const [providerName, setProviderName] = useState("");
   const [model, setModel] = useState("");
   const [deviceId, setDeviceId] = useState("");
-  const [refreshIntervalMs, setRefreshIntervalMs] = useState(5_000);
+  const [refreshIntervalMs, setRefreshIntervalMs] = useState(10 * 60_000);
   const [isTransferring, setIsTransferring] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
   const priceAutoRefreshAttemptedRef = useRef(false);
@@ -153,6 +170,7 @@ export function Dashboard() {
   const trends = useDailyTrends(params, refreshIntervalMs);
   const providerStats = useProviderStats(params, refreshIntervalMs);
   const modelStats = useModelStats(params, refreshIntervalMs);
+  const projectStats = useProjectStats(params, refreshIntervalMs);
   const providerOptionsQuery = useProviderStats(optionParams, refreshIntervalMs);
   const modelOptionsQuery = useModelStats(modelOptionParams, refreshIntervalMs);
   const isRefreshing =
@@ -160,6 +178,7 @@ export function Dashboard() {
     trends.isFetching ||
     providerStats.isFetching ||
     modelStats.isFetching ||
+    projectStats.isFetching ||
     providerOptionsQuery.isFetching ||
     modelOptionsQuery.isFetching;
   const lastUpdatedAt = Math.max(
@@ -167,6 +186,7 @@ export function Dashboard() {
     trends.dataUpdatedAt,
     providerStats.dataUpdatedAt,
     modelStats.dataUpdatedAt,
+    projectStats.dataUpdatedAt,
     providerOptionsQuery.dataUpdatedAt,
     modelOptionsQuery.dataUpdatedAt,
   );
@@ -183,6 +203,7 @@ export function Dashboard() {
     trends.error ??
     providerStats.error ??
     modelStats.error ??
+    projectStats.error ??
     providerOptionsQuery.error ??
     modelOptionsQuery.error ??
     devices.error ??
@@ -464,14 +485,14 @@ export function Dashboard() {
               onChange={(event) => setRefreshIntervalMs(Number(event.target.value))}
               title={
                 refreshIntervalMs > 0
-                  ? t("filters.refreshEvery", { seconds: refreshIntervalMs / 1000 })
+                  ? t("filters.refreshEvery", { interval: formatRefreshInterval(refreshIntervalMs) })
                   : t("filters.refreshOff")
               }
               className="control-select w-[78px] min-w-0"
             >
               {REFRESH_INTERVALS.map((value) => (
                 <option key={value} value={value}>
-                  {value === 0 ? t("refresh.off") : `${value / 1000}s`}
+                  {value === 0 ? t("refresh.off") : formatRefreshInterval(value)}
                 </option>
               ))}
             </select>
@@ -583,6 +604,11 @@ export function Dashboard() {
                       · {t("status.syncErrors", { count: fmtInt(sync.data.errors.length) })}
                     </span>
                   )}
+                  {sync.data.deferredFiles > 0 && (
+                    <span className="text-amber-600 dark:text-amber-400">
+                      · {t("status.syncDeferred", { count: fmtInt(sync.data.deferredFiles) })}
+                    </span>
+                  )}
                 </>
               ) : null}
               {isRefreshing && !sync.isFetching && (
@@ -594,7 +620,7 @@ export function Dashboard() {
             </div>
             <div className="flex items-center gap-2">
               {refreshIntervalMs > 0 && (
-                <span>{t("status.autoRefresh", { seconds: refreshIntervalMs / 1000 })}</span>
+                <span>{t("status.autoRefresh", { interval: formatRefreshInterval(refreshIntervalMs) })}</span>
               )}
               {lastUpdatedAt > 0 && (
                 <span>{t("status.lastUpdated", { time: formatTime(lastUpdatedAt) })}</span>
@@ -624,6 +650,8 @@ export function Dashboard() {
             )}
           </div>
         )}
+
+        <SyncHealthPanel sources={sync.data?.sourceStatuses} />
 
         {/* 第三方社区雷达独立联网，优先展示；失败时不影响本地统计。 */}
         <CodexRadarPanel />
@@ -657,6 +685,18 @@ export function Dashboard() {
           endDate={range.end}
           rangeLabel={getRangeLabel(range.preset, t)}
         />
+
+        {/* 项目维度比会话编号更接近实际工作流的成本归因。 */}
+        <section>
+          <UsageBreakdownTable
+            data={projectStats.data}
+            isLoading={projectStats.isLoading}
+            title={t("breakdown.projects")}
+            label={t("breakdown.project")}
+            emptyMessage={t("breakdown.projectNoData")}
+            mode="project"
+          />
+        </section>
 
         {/* 维度统计：参考 CC Switch，按供应商/模型切换查看 */}
         <section className="space-y-3">

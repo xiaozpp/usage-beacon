@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   DailyStats,
   CodexRadarSnapshot,
+  RuntimeStats,
   DeviceInfo,
   LogFilters,
   ModelPricingInfo,
@@ -11,6 +12,7 @@ import type {
   ProviderStats,
   RequestLogDetail,
   SessionSyncResult,
+  UsageBreakdownStats,
   UsageSummary,
   UsageExportPayload,
   UsageImportResult,
@@ -34,6 +36,12 @@ export async function fetchUsageSummary(params: UsageQueryParams): Promise<Usage
   return invoke<UsageSummary>("fetch_usage_summary", params);
 }
 
+export async function fetchRuntimeStats(
+  params: UsageQueryParams,
+): Promise<RuntimeStats> {
+  return invoke<RuntimeStats>("fetch_runtime_stats", params);
+}
+
 export async function fetchDailyTrends(params: UsageQueryParams): Promise<DailyStats[]> {
   return invoke<DailyStats[]>("fetch_daily_trends", params);
 }
@@ -44,6 +52,14 @@ export async function fetchProviderStats(params: UsageQueryParams): Promise<Prov
 
 export async function fetchModelStats(params: UsageQueryParams): Promise<ModelStats[]> {
   return invoke<ModelStats[]>("fetch_model_stats", params);
+}
+
+export async function fetchProjectStats(params: UsageQueryParams): Promise<UsageBreakdownStats[]> {
+  return invoke<UsageBreakdownStats[]>("fetch_project_stats", params);
+}
+
+export async function fetchSessionStats(params: UsageQueryParams): Promise<UsageBreakdownStats[]> {
+  return invoke<UsageBreakdownStats[]>("fetch_session_stats", params);
 }
 
 export async function fetchRequestLogs(

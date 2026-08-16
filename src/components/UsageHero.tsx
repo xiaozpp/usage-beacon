@@ -25,17 +25,18 @@ const APP_THEME: Record<string, { label: string; icon: AppBrandIconName; color: 
   grokbuild: { label: "Grok Build", icon: "grok", color: "text-rose-500" },
   opencode: { label: "OpenCode", icon: "opencode", color: "text-violet-500" },
   zcode: { label: "ZCode", icon: "zcode", color: "text-slate-700 dark:text-white" },
+  deepseek_harness: { label: "DeepSeek Harness", icon: "deepseek", color: "text-sky-600" },
+  hermes: { label: "Hermes", icon: "hermes", color: "text-amber-600" },
 };
 
 export function UsageHero({ summary, isLoading, appType }: Props) {
   const { t } = useI18n();
   const theme = appType ? APP_THEME[appType] : undefined;
   const cacheHitRate = summary?.cacheHitRate ?? 0;
-  const cacheWriteUnavailable =
-    Boolean(summary) &&
-    summary?.cacheCreationTokens === 0 &&
-    appType !== "claude" &&
-    appType !== "opencode";
+  const showCacheCreation = Boolean(
+    summary &&
+      (summary.cacheCreationTokens > 0 || appType === "claude" || appType === "opencode"),
+  );
 
   return (
     <section className="hero-panel p-4 md:p-5">
@@ -79,14 +80,37 @@ export function UsageHero({ summary, isLoading, appType }: Props) {
             <div className="hero-stat-divider" />
             <div className="flex flex-col">
               <span className="hero-stat-label">{t("hero.totalCost")}</span>
-              <span className="hero-stat-value tabular-nums text-emerald-300">
-                {isLoading ? "..." : summary ? fmtUsd(summary.totalCost) : "-"}
+              <span
+                className={cn(
+                  "hero-stat-value tabular-nums",
+                  summary && summary.unpricedRequests > 0
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-emerald-300",
+                )}
+              >
+                {isLoading
+                  ? "..."
+                  : summary
+                    ? summary.unpricedRequests >= summary.totalRequests && summary.totalRequests > 0
+                      ? t("breakdown.unpriced")
+                      : fmtUsd(summary.totalCost)
+                    : "-"}
               </span>
+              {summary && summary.unpricedRequests > 0 && (
+                <span className="text-[0.65rem] text-amber-600 dark:text-amber-400">
+                  {t("breakdown.unpricedCount", { count: fmtInt(summary.unpricedRequests) })}
+                </span>
+              )}
             </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <div
+          className={cn(
+            "grid grid-cols-2 gap-3",
+            showCacheCreation ? "lg:grid-cols-5" : "lg:grid-cols-4",
+          )}
+        >
           <MiniStat
             icon={<ArrowDownToLine className="h-3.5 w-3.5" />}
             label={t("hero.input")}
@@ -101,20 +125,15 @@ export function UsageHero({ summary, isLoading, appType }: Props) {
             accent="text-violet-500"
             isLoading={isLoading}
           />
-          <MiniStat
-            icon={<Database className="h-3.5 w-3.5" />}
-            label={t("hero.cacheCreation")}
-            value={
-              cacheWriteUnavailable
-                ? t("hero.cacheUnavailable")
-                : summary
-                  ? fmtTokens(summary.cacheCreationTokens)
-                  : "-"
-            }
-            accent="text-amber-500"
-            muted={cacheWriteUnavailable}
-            isLoading={isLoading}
-          />
+          {showCacheCreation && (
+            <MiniStat
+              icon={<Database className="h-3.5 w-3.5" />}
+              label={t("hero.cacheCreation")}
+              value={fmtTokens(summary?.cacheCreationTokens ?? 0)}
+              accent="text-amber-500"
+              isLoading={isLoading}
+            />
+          )}
           <MiniStat
             icon={<Sparkles className="h-3.5 w-3.5" />}
             label={t("hero.cacheRead")}
@@ -147,14 +166,12 @@ function MiniStat({
   label,
   value,
   accent,
-  muted = false,
   isLoading,
 }: {
   icon: ReactNode;
   label: string;
   value: string;
   accent: string;
-  muted?: boolean;
   isLoading: boolean;
 }) {
   return (
@@ -163,7 +180,7 @@ function MiniStat({
         <span className={accent}>{icon}</span>
         <span>{label}</span>
       </div>
-      <div className={cn("text-sm font-semibold tabular-nums", muted && "text-muted-foreground")}>
+      <div className="text-sm font-semibold tabular-nums">
         {isLoading ? "..." : value}
       </div>
     </div>

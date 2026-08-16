@@ -21,6 +21,11 @@ export function fmtUsd(s: string | number): string {
   return `$${n.toFixed(2)}`;
 }
 
+export function isPotentiallyUnpriced(totalCost: string | number, totalTokens: number): boolean {
+  const cost = typeof totalCost === "string" ? parseFloat(totalCost) : totalCost;
+  return totalTokens > 0 && Number.isFinite(cost) && cost === 0;
+}
+
 export function fmtTokens(n: number, locale: FormatLocale = getFormatLocale()): string {
   if (locale === "zh-CN" && n >= 100_000_000) return `${(n / 100_000_000).toFixed(2)}亿`;
   if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
@@ -40,4 +45,14 @@ export function fmtPercent(n: number, digits = 1): string {
 export function fmtLatency(ms: number): string {
   if (ms < 1000) return `${ms.toFixed(0)}ms`;
   return `${(ms / 1000).toFixed(2)}s`;
+}
+
+export function fmtDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }

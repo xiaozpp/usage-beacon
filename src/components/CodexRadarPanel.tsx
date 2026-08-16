@@ -42,6 +42,7 @@ export function CodexRadarPanel() {
   const radar = useCodexRadar();
   const iq = radar.data?.iq;
   const quota = radar.data?.quota;
+  const usingFallback = radar.data?.usedFallback ?? false;
   const reliablePoints = (iq?.points ?? []).filter(
     (point) => point.model.startsWith("gpt-") && point.total >= 30,
   );
@@ -75,9 +76,15 @@ export function CodexRadarPanel() {
           </div>
         </div>
         <div className="radar-board-actions">
-          <span className={`radar-live-badge ${radar.isError ? "is-error" : ""}`}>
+          <span className={`radar-live-badge ${radar.isError ? "is-error" : usingFallback ? "is-snapshot" : ""}`}>
             <Radio className="h-3.5 w-3.5" />
-            {radar.isError ? t("radar.offline") : radar.isFetching ? t("radar.updating") : t("radar.online")}
+            {radar.isError
+              ? t("radar.offline")
+              : radar.isFetching
+                ? t("radar.updating")
+                : usingFallback
+                  ? t("radar.snapshot")
+                  : t("radar.online")}
           </span>
           <button
             type="button"

@@ -47,6 +47,7 @@ impl Default for UsageQuery {
 pub struct UsageSummary {
     pub total_requests: u32,
     pub total_cost: String,
+    pub unpriced_requests: u32,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
@@ -54,6 +55,24 @@ pub struct UsageSummary {
     pub real_total_tokens: u64,
     pub success_rate: f32,
     pub cache_hit_rate: f64,
+}
+
+/// 各来源会话运行指标的统一聚合结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeStats {
+    pub source_count: u32,
+    pub session_count: u32,
+    pub turns: u32,
+    pub steps: u32,
+    pub llm_ms: u64,
+    pub tool_ms: u64,
+    pub ttft_ms: u64,
+    pub ttft_steps: u32,
+    pub decode_ms: u64,
+    pub decode_tokens: u64,
+    pub average_ttft_ms: Option<f64>,
+    pub decode_tokens_per_second: Option<f64>,
 }
 
 /// 日/小时趋势
@@ -80,7 +99,7 @@ pub struct ProviderStats {
     pub total_tokens: u64,
     pub total_cost: String,
     pub success_rate: f32,
-    pub avg_latency_ms: f64,
+    pub avg_latency_ms: Option<f64>,
 }
 
 /// 模型维度统计
@@ -92,6 +111,21 @@ pub struct ModelStats {
     pub total_tokens: u64,
     pub total_cost: String,
     pub avg_cost_per_request: String,
+}
+
+/// 项目或会话维度统计
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageBreakdownStats {
+    pub key: String,
+    pub request_count: u32,
+    pub total_tokens: u64,
+    pub total_cost: String,
+    pub avg_cost_per_request: String,
+    pub unpriced_requests: u32,
+    pub source_name: String,
+    pub app_type: String,
+    pub latest_at: i64,
 }
 
 /// 请求日志筛选
@@ -146,6 +180,7 @@ pub struct RequestLogDetail {
     pub cost_multiplier: String,
     pub created_at: i64,
     pub data_source: String,
+    pub project: String,
 }
 
 /// 模型定价信息
@@ -167,33 +202,42 @@ pub fn get_usage_summary(db: &Database, q: &UsageQuery) -> Result<UsageSummary> 
     db.with_conn(|conn| {
         let mut sql = format!(
             "SELECT
-                COUNT(*) as cnt,
+                SUM(COALESCE(l.request_count, 1)) as cnt,
                 COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
                 SUM({fresh_input}) as input_tokens,
                 SUM(l.output_tokens) as output_tokens,
                 SUM(l.cache_read_tokens) as cache_read_tokens,
                 SUM(l.cache_creation_tokens) as cache_creation_tokens,
-                SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END) * 100.0
-                    / NULLIF(COUNT(*), 0) as success_rate,
+                SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300
+                    THEN COALESCE(l.request_count, 1) ELSE 0 END) * 100.0
+                    / NULLIF(SUM(COALESCE(l.request_count, 1)), 0) as success_rate,
                 SUM(l.cache_read_tokens) * 100.0
                     / NULLIF(SUM({fresh_input} + l.cache_creation_tokens + l.cache_read_tokens), 0)
-                    as cache_hit_rate
+                    as cache_hit_rate,
+                SUM(CASE
+                    WHEN CAST(l.total_cost_usd AS REAL) = 0 AND ({real_total}) > 0
+                        THEN COALESCE(l.request_count, 1)
+                    ELSE 0
+                END) as unpriced_requests
              FROM proxy_request_logs l
              WHERE {filter} AND l.created_at BETWEEN ?1 AND ?2",
             fresh_input = fresh_input_sql("l"),
+            real_total = real_total_tokens_sql("l"),
             filter = effective_usage_log_filter("l")
         );
 
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-            Box::new(q.start_date),
-            Box::new(q.end_date),
-        ];
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(q.start_date), Box::new(q.end_date)];
         push_filters(&mut sql, &mut params, "l", q)?;
 
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt.query(rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())))?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(
+            params.iter().map(|b| b.as_ref()),
+        ))?;
 
-        let row = rows.next()?.ok_or_else(|| AppError::Database("无数据".into()))?;
+        let row = rows
+            .next()?
+            .ok_or_else(|| AppError::Database("无数据".into()))?;
 
         let input_tokens: Option<i64> = row.get(2)?;
         let output_tokens: Option<i64> = row.get(3)?;
@@ -209,6 +253,7 @@ pub fn get_usage_summary(db: &Database, q: &UsageQuery) -> Result<UsageSummary> 
         Ok(UsageSummary {
             total_requests: row.get::<_, i64>(0)? as u32,
             total_cost: format!("{:.6}", row.get::<_, f64>(1)?),
+            unpriced_requests: row.get::<_, Option<i64>>(8)?.unwrap_or(0) as u32,
             input_tokens: input_tokens.unwrap_or(0) as u64,
             output_tokens: output_tokens.unwrap_or(0) as u64,
             cache_read_tokens: cache_read.unwrap_or(0) as u64,
@@ -216,6 +261,80 @@ pub fn get_usage_summary(db: &Database, q: &UsageQuery) -> Result<UsageSummary> 
             real_total_tokens: real_total,
             success_rate: row.get::<_, Option<f32>>(6)?.unwrap_or(0.0),
             cache_hit_rate: row.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
+        })
+    })
+}
+
+/// 获取当前筛选范围内可用的会话级运行指标。
+///
+/// 这些数字不从 proxy_request_logs 的 usage 行反推，而是直接读取会话级
+/// 折叠结果，避免把一个会话的耗时重复写入每条请求。
+pub fn get_runtime_stats(db: &Database, q: &UsageQuery) -> Result<RuntimeStats> {
+    db.with_conn(|conn| {
+        let mut sql = String::from(
+            "SELECT
+                COUNT(DISTINCT r.app_type) AS source_count,
+                COUNT(*) AS session_count,
+                COALESCE(SUM(r.turns), 0) AS turns,
+                COALESCE(SUM(r.steps), 0) AS steps,
+                COALESCE(SUM(r.llm_ms), 0) AS llm_ms,
+                COALESCE(SUM(r.tool_ms), 0) AS tool_ms,
+                COALESCE(SUM(r.ttft_ms), 0) AS ttft_ms,
+                COALESCE(SUM(r.ttft_steps), 0) AS ttft_steps,
+                COALESCE(SUM(r.decode_ms), 0) AS decode_ms,
+                COALESCE(SUM(r.decode_tokens), 0) AS decode_tokens
+             FROM session_runtime_stats r
+             WHERE r.last_event_at >= ?1
+               AND r.started_at <= ?2",
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(q.start_date), Box::new(q.end_date)];
+        push_runtime_filters(&mut sql, &mut params, "r", q)?;
+
+        let mut stmt = conn.prepare(&sql)?;
+        let row = stmt.query_row(
+            rusqlite::params_from_iter(params.iter().map(|value| value.as_ref())),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                ))
+            },
+        )?;
+
+        let source_count = non_negative_u32(row.0);
+        let session_count = non_negative_u32(row.1);
+        let turns = non_negative_u32(row.2);
+        let steps = non_negative_u32(row.3);
+        let llm_ms = non_negative_u64(row.4);
+        let tool_ms = non_negative_u64(row.5);
+        let ttft_ms = non_negative_u64(row.6);
+        let ttft_steps = non_negative_u32(row.7);
+        let decode_ms = non_negative_u64(row.8);
+        let decode_tokens = non_negative_u64(row.9);
+
+        Ok(RuntimeStats {
+            source_count,
+            session_count,
+            turns,
+            steps,
+            llm_ms,
+            tool_ms,
+            ttft_ms,
+            ttft_steps,
+            decode_ms,
+            decode_tokens,
+            average_ttft_ms: (ttft_steps > 0).then(|| ttft_ms as f64 / ttft_steps as f64),
+            decode_tokens_per_second: (decode_ms > 0)
+                .then(|| decode_tokens as f64 * 1_000.0 / decode_ms as f64),
         })
     })
 }
@@ -231,7 +350,7 @@ pub fn get_daily_trends(db: &Database, q: &UsageQuery) -> Result<Vec<DailyStats>
         let mut sql = format!(
             "SELECT
                 {bucket_expression} as date,
-                COUNT(*) as cnt,
+                SUM(COALESCE(l.request_count, 1)) as cnt,
                 COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as cost,
                 SUM({real_total}) as total_tokens,
                 SUM({fresh_input}) as input_tokens,
@@ -284,12 +403,13 @@ pub fn get_provider_stats(db: &Database, q: &UsageQuery) -> Result<Vec<ProviderS
             "SELECT
                 l.provider_id,
                 {provider_name} as provider_name,
-                COUNT(*) as cnt,
+                SUM(COALESCE(l.request_count, 1)) as cnt,
                 SUM({real_total}) as total_tokens,
                 COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
-                SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300 THEN 1 ELSE 0 END) * 100.0
-                    / NULLIF(COUNT(*), 0) as success_rate,
-                AVG(l.latency_ms) as avg_latency
+                SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 300
+                    THEN COALESCE(l.request_count, 1) ELSE 0 END) * 100.0
+                    / NULLIF(SUM(COALESCE(l.request_count, 1)), 0) as success_rate,
+                AVG(CASE WHEN COALESCE(l.data_source, 'proxy') = 'proxy' THEN l.latency_ms END) as avg_latency
              FROM proxy_request_logs l
              WHERE {filter} AND l.created_at BETWEEN ?1 AND ?2",
             provider_name = provider_name_coalesce("l"),
@@ -314,7 +434,7 @@ pub fn get_provider_stats(db: &Database, q: &UsageQuery) -> Result<Vec<ProviderS
                 total_tokens: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u64,
                 total_cost: format!("{:.6}", row.get::<_, f64>(4)?),
                 success_rate: row.get::<_, Option<f32>>(5)?.unwrap_or(0.0),
-                avg_latency_ms: row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+                avg_latency_ms: row.get(6)?,
             })
         })?;
 
@@ -332,7 +452,7 @@ pub fn get_model_stats(db: &Database, q: &UsageQuery) -> Result<Vec<ModelStats>>
         let mut sql = format!(
             "SELECT
                 COALESCE(NULLIF(l.pricing_model, ''), l.model) as model,
-                COUNT(*) as cnt,
+                SUM(COALESCE(l.request_count, 1)) as cnt,
                 SUM({real_total}) as total_tokens,
                 COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost
              FROM proxy_request_logs l
@@ -364,6 +484,89 @@ pub fn get_model_stats(db: &Database, q: &UsageQuery) -> Result<Vec<ModelStats>>
                     total_tokens: row.get::<_, Option<i64>>(2)?.unwrap_or(0) as u64,
                     total_cost: format!("{:.6}", total_cost),
                     avg_cost_per_request: format!("{:.6}", avg_cost),
+                })
+            },
+        )?;
+
+        let mut stats = Vec::new();
+        for row in rows {
+            stats.push(row?);
+        }
+        Ok(stats)
+    })
+}
+
+/// 项目维度统计。只对有项目标识的记录展示，避免把未解析出的空值混成一个项目。
+pub fn get_project_stats(db: &Database, q: &UsageQuery) -> Result<Vec<UsageBreakdownStats>> {
+    get_breakdown_stats(db, q, "l.project", None)
+}
+
+/// 会话维度统计。用于定位具体会话的 token 与成本消耗。
+pub fn get_session_stats(db: &Database, q: &UsageQuery) -> Result<Vec<UsageBreakdownStats>> {
+    get_breakdown_stats(db, q, "l.session_id", Some(12))
+}
+
+fn get_breakdown_stats(
+    db: &Database,
+    q: &UsageQuery,
+    dimension: &str,
+    limit: Option<u32>,
+) -> Result<Vec<UsageBreakdownStats>> {
+    db.with_conn(|conn| {
+        let mut sql = format!(
+            "SELECT
+                TRIM(COALESCE({dimension}, '')) as dimension_key,
+                {provider_name} as source_name,
+                SUM(COALESCE(l.request_count, 1)) as cnt,
+                SUM({real_total}) as total_tokens,
+                COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0) as total_cost,
+                SUM(CASE
+                    WHEN CAST(l.total_cost_usd AS REAL) = 0 AND ({real_total}) > 0
+                        THEN COALESCE(l.request_count, 1)
+                    ELSE 0
+                END) as unpriced_requests,
+                MAX(l.app_type) as app_type,
+                MAX(l.created_at) as latest_at
+             FROM proxy_request_logs l
+             WHERE {filter}
+               AND l.created_at BETWEEN ?1 AND ?2
+               AND TRIM(COALESCE({dimension}, '')) <> ''",
+            real_total = real_total_tokens_sql("l"),
+            provider_name = provider_name_coalesce("l"),
+            filter = effective_usage_log_filter("l")
+        );
+
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(q.start_date), Box::new(q.end_date)];
+        push_filters(&mut sql, &mut params, "l", q)?;
+        sql.push_str(" GROUP BY dimension_key ORDER BY total_cost DESC, cnt DESC");
+        if let Some(limit) = limit {
+            sql.push_str(&format!(" LIMIT {limit}"));
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(params.iter().map(|b| b.as_ref())),
+            |row| {
+                let count: i64 = row.get(2)?;
+                let total_cost: f64 = row.get(4)?;
+                Ok(UsageBreakdownStats {
+                    key: row.get(0)?,
+                    source_name: row.get(1)?,
+                    request_count: count as u32,
+                    total_tokens: row.get::<_, Option<i64>>(3)?.unwrap_or(0) as u64,
+                    total_cost: format!("{total_cost:.6}"),
+                    avg_cost_per_request: format!(
+                        "{:.6}",
+                        if count > 0 {
+                            total_cost / count as f64
+                        } else {
+                            0.0
+                        }
+                    ),
+                    unpriced_requests: row.get::<_, Option<i64>>(5)?.unwrap_or(0) as u32,
+                    app_type: row.get(6)?,
+                    latest_at: row.get(7)?,
                 })
             },
         )?;
@@ -449,7 +652,7 @@ pub fn get_request_logs(
                 l.total_cost_usd, l.input_cost_usd, l.output_cost_usd,
                 l.cache_read_cost_usd, l.cache_creation_cost_usd,
                 l.latency_ms, l.status_code, l.error_message, l.session_id,
-                l.is_streaming, l.cost_multiplier, l.created_at, l.data_source
+                l.is_streaming, l.cost_multiplier, l.created_at, l.data_source, l.project
              FROM proxy_request_logs l
              WHERE {where_sql}
              ORDER BY l.created_at DESC
@@ -491,6 +694,7 @@ pub fn get_request_logs(
                     cost_multiplier: row.get(22)?,
                     created_at: row.get(23)?,
                     data_source: row.get(24)?,
+                    project: row.get(25)?,
                 })
             },
         )?;
@@ -521,7 +725,7 @@ pub fn get_request_detail(db: &Database, request_id: &str) -> Result<Option<Requ
                 l.total_cost_usd, l.input_cost_usd, l.output_cost_usd,
                 l.cache_read_cost_usd, l.cache_creation_cost_usd,
                 l.latency_ms, l.status_code, l.error_message, l.session_id,
-                l.is_streaming, l.cost_multiplier, l.created_at, l.data_source
+                l.is_streaming, l.cost_multiplier, l.created_at, l.data_source, l.project
              FROM proxy_request_logs l
              WHERE l.request_id = ?1",
             provider_name = provider_name_coalesce("l"),
@@ -555,6 +759,7 @@ pub fn get_request_detail(db: &Database, request_id: &str) -> Result<Option<Requ
                 cost_multiplier: row.get(22)?,
                 created_at: row.get(23)?,
                 data_source: row.get(24)?,
+                project: row.get(25)?,
             })
         });
 
@@ -609,7 +814,7 @@ fn effective_usage_log_filter(alias: &str) -> String {
     );
     format!(
         "NOT (
-            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session', 'zcode_session')
+            {data_source} IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session', 'zcode_session', 'grok_session', 'deepseek_harness_session', 'hermes_session')
             AND EXISTS (
                 SELECT 1 FROM proxy_request_logs p
                 WHERE {proxy_data_source} = 'proxy'
@@ -622,7 +827,7 @@ fn effective_usage_log_filter(alias: &str) -> String {
                       p.cache_creation_tokens = {alias}.cache_creation_tokens
                       OR (
                           {alias}.cache_creation_tokens = 0
-                          AND {data_source} IN ('codex_session', 'gemini_session', 'opencode_session', 'zcode_session')
+                          AND {data_source} IN ('codex_session', 'gemini_session', 'opencode_session', 'zcode_session', 'grok_session', 'deepseek_harness_session', 'hermes_session')
                       )
                   )
                   AND p.created_at BETWEEN {alias}.created_at - {window} AND {alias}.created_at + {window}
@@ -688,10 +893,48 @@ fn provider_name_coalesce(alias: &str) -> String {
             WHEN '_opencode_session' THEN 'OpenCode (Session)'
             WHEN '_zcode_session' THEN 'ZCode (Session)'
             WHEN '_grok_session' THEN 'Grok Build (Session)'
+            WHEN '_deepseek_harness_session' THEN 'DeepSeek Harness (Session)'
+            WHEN '_hermes_session' THEN 'Hermes (Session)'
             ELSE {a}.provider_id
         END",
         a = alias
     )
+}
+
+fn non_negative_u32(value: i64) -> u32 {
+    value.max(0).min(u32::MAX as i64) as u32
+}
+
+fn non_negative_u64(value: i64) -> u64 {
+    value.max(0) as u64
+}
+
+fn push_runtime_filters(
+    sql: &mut String,
+    params: &mut Vec<Box<dyn rusqlite::ToSql>>,
+    alias: &str,
+    q: &UsageQuery,
+) -> Result<()> {
+    if let Some(ref app_type) = q.app_type {
+        sql.push_str(&format!(" AND {alias}.app_type = ?", alias = alias));
+        params.push(Box::new(app_type.clone()));
+    }
+    if let Some(ref provider_name) = q.provider_name {
+        sql.push_str(&format!(
+            " AND {provider} = ?",
+            provider = provider_name_coalesce(alias)
+        ));
+        params.push(Box::new(provider_name.clone()));
+    }
+    if let Some(ref model) = q.model {
+        sql.push_str(&format!(" AND {alias}.model = ?", alias = alias));
+        params.push(Box::new(model.clone()));
+    }
+    if let Some(ref device_id) = q.device_id {
+        sql.push_str(&format!(" AND {alias}.device_id = ?", alias = alias));
+        params.push(Box::new(device_id.clone()));
+    }
+    Ok(())
 }
 
 /// 追加过滤条件
@@ -833,9 +1076,11 @@ mod tests {
             "INSERT INTO proxy_request_logs (
                 request_id, provider_id, app_type, model,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                input_token_semantics, latency_ms, status_code, created_at, data_source
+                input_token_semantics, latency_ms, status_code, created_at, data_source,
+                session_id, project
              ) VALUES ('test-1', '_codex_session', 'codex', 'gpt-test',
-                       1000, 50, 600, 100, 1, 0, 200, 1700000000, 'codex_session')",
+                       1000, 50, 600, 100, 1, 0, 200, 1700000000,
+                       'codex_session', 'session-1', 'project-a')",
             [],
         )
         .unwrap();
@@ -855,6 +1100,7 @@ mod tests {
         assert_eq!(summary.input_tokens, 300);
         assert_eq!(summary.output_tokens, 50);
         assert_eq!(summary.real_total_tokens, 1050);
+        assert_eq!(summary.unpriced_requests, 1);
         assert!((summary.cache_hit_rate - 60.0).abs() < 1e-9);
 
         let models = get_model_stats(&db, &query).unwrap();
@@ -862,6 +1108,15 @@ mod tests {
 
         let providers = get_provider_stats(&db, &query).unwrap();
         assert_eq!(providers[0].total_tokens, 1050);
+        assert_eq!(providers[0].avg_latency_ms, None);
+
+        let projects = get_project_stats(&db, &query).unwrap();
+        assert_eq!(projects[0].key, "project-a");
+        assert_eq!(projects[0].total_tokens, 1050);
+        assert_eq!(projects[0].unpriced_requests, 1);
+
+        let sessions = get_session_stats(&db, &query).unwrap();
+        assert_eq!(sessions[0].key, "session-1");
 
         let trends = get_daily_trends(&db, &query).unwrap();
         assert_eq!(trends[0].total_tokens, 1050);
@@ -880,6 +1135,87 @@ mod tests {
         assert_eq!(logs.page_size, 10);
         assert_eq!(logs.data[0].input_tokens, 1000);
         assert_eq!(logs.data[0].fresh_input_tokens, 300);
+        assert_eq!(logs.data[0].project, "project-a");
+    }
+
+    #[test]
+    fn runtime_stats_include_sessions_overlapping_the_time_range() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::schema::create_tables(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO session_runtime_stats (
+                data_source, app_type, provider_id, session_id, model,
+                turns, steps, llm_ms, tool_ms, ttft_ms, ttft_steps,
+                decode_ms, decode_tokens, started_at, last_event_at, device_id
+             ) VALUES (?1, 'deepseek_harness', '_deepseek_harness_session',
+                       'runtime-overlap', 'deepseek-chat',
+                       2, 3, 1200, 300, 180, 2,
+                       900, 90, 900, 1500, 'device-a')",
+            [crate::schema::DATA_SOURCE_DEEPSEEK_HARNESS_SESSION],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_runtime_stats (
+                data_source, app_type, provider_id, session_id, model,
+                turns, steps, llm_ms, tool_ms, ttft_ms, ttft_steps,
+                decode_ms, decode_tokens, started_at, last_event_at, device_id
+             ) VALUES ('codex_session', 'codex', '_codex_session',
+                       'runtime-other-source', 'gpt-test',
+                       1, 1, 100, 0, 50, 1,
+                       100, 20, 1100, 1600, 'device-a')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_runtime_stats (
+                data_source, app_type, provider_id, session_id, model,
+                turns, steps, llm_ms, tool_ms, ttft_ms, ttft_steps,
+                decode_ms, decode_tokens, started_at, last_event_at, device_id
+             ) VALUES (?1, 'deepseek_harness', '_deepseek_harness_session',
+                       'runtime-outside', 'deepseek-chat',
+                       1, 1, 100, 0, 50, 1,
+                       100, 10, 2100, 2200, 'device-a')",
+            [crate::schema::DATA_SOURCE_DEEPSEEK_HARNESS_SESSION],
+        )
+        .unwrap();
+        let db = Database {
+            conn: std::sync::Mutex::new(conn),
+        };
+
+        let stats = get_runtime_stats(
+            &db,
+            &UsageQuery {
+                start_date: 1000,
+                end_date: 2000,
+                ..UsageQuery::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(stats.source_count, 2);
+        assert_eq!(stats.session_count, 2);
+        assert_eq!(stats.turns, 3);
+        assert_eq!(stats.steps, 4);
+        assert_eq!(stats.llm_ms, 1300);
+        assert_eq!(stats.tool_ms, 300);
+        assert_eq!(stats.ttft_steps, 3);
+        assert_eq!(stats.decode_tokens, 110);
+        assert_eq!(stats.average_ttft_ms, Some(230.0 / 3.0));
+        assert_eq!(stats.decode_tokens_per_second, Some(110.0));
+
+        let deepseek_stats = get_runtime_stats(
+            &db,
+            &UsageQuery {
+                start_date: 1000,
+                end_date: 2000,
+                app_type: Some("deepseek_harness".to_owned()),
+                ..UsageQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(deepseek_stats.source_count, 1);
+        assert_eq!(deepseek_stats.session_count, 1);
+        assert_eq!(deepseek_stats.steps, 3);
     }
 
     #[test]

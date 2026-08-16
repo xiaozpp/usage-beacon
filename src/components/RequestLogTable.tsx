@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { LogFilters, RequestLogDetail } from "../types/usage";
-import { fmtDateTime, fmtUsd, fmtTokens } from "../lib/format";
+import { fmtDateTime, fmtUsd, fmtTokens, isPotentiallyUnpriced } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { useRequestLogs } from "../lib/hooks";
 import { RequestDetailDialog } from "./RequestDetailDialog";
@@ -102,7 +102,19 @@ export function RequestLogTable({ filters, refetchMs = 30000 }: Props) {
                     {fmtTokens(row.cacheReadTokens)}
                   </td>
                   <td className="px-4 py-2 text-right tabular-nums">
-                    {fmtUsd(row.totalCostUsd)}
+                    {isPotentiallyUnpriced(
+                      row.totalCostUsd,
+                      row.freshInputTokens +
+                        row.outputTokens +
+                        row.cacheReadTokens +
+                        row.cacheCreationTokens,
+                    ) ? (
+                      <span className="text-amber-600 dark:text-amber-400">
+                        {t("breakdown.unpriced")}
+                      </span>
+                    ) : (
+                      fmtUsd(row.totalCostUsd)
+                    )}
                   </td>
                   <td className="px-4 py-2">
                     <StatusBadge code={row.statusCode} />

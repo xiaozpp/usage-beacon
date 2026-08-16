@@ -3,8 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const IQ_URL: &str = "https://codexradar.com/api/intelligence-efficiency-metrics";
+const IQ_FALLBACK_URL: &str =
+    "https://codexradar.com/data/intelligence-efficiency.json?v=20260804-activity24h";
 const HOME_URL: &str = "https://codexradar.com/";
-const MAX_IQ_BYTES: u64 = 512 * 1024;
+const MAX_IQ_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_HOME_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
@@ -13,6 +15,7 @@ pub struct CodexRadarSnapshot {
     pub iq: Option<RadarIqSnapshot>,
     pub quota: Option<RadarQuotaSnapshot>,
     pub fetched_at: i64,
+    pub used_fallback: bool,
     pub warnings: Vec<String>,
 }
 
@@ -92,10 +95,17 @@ struct IqApiPoint {
     #[serde(default)]
     total: u32,
     #[serde(default)]
+    valid_tasks: Option<f64>,
+    #[serde(default)]
+    weighted_total: Option<f64>,
+    #[serde(default)]
+    total_runs: u32,
+    #[serde(default)]
     runs_24h: u32,
     #[serde(default)]
     runs_total: u32,
     source_updated_at: Option<String>,
+    latest_graded_at: Option<String>,
 }
 
 pub async fn fetch_codex_radar() -> Result<CodexRadarSnapshot, String> {
@@ -107,20 +117,25 @@ pub async fn fetch_codex_radar() -> Result<CodexRadarSnapshot, String> {
         .build()
         .map_err(|error| format!("创建联网客户端失败: {error}"))?;
 
-    let (iq_result, quota_result) = tokio::join!(
-        fetch_text(&client, IQ_URL, MAX_IQ_BYTES),
+    let (iq_result, quota_result) = tokio::join!(fetch_iq_snapshot(&client), async {
         fetch_text(&client, HOME_URL, MAX_HOME_BYTES)
-    );
+            .await
+            .and_then(|body| parse_quota(&body))
+    });
 
     let mut warnings = Vec::new();
-    let iq = match iq_result.and_then(|body| parse_iq(&body)) {
-        Ok(value) => Some(value),
+    let mut used_fallback = false;
+    let iq = match iq_result {
+        Ok((value, fallback_reason)) => {
+            used_fallback = fallback_reason.is_some();
+            Some(value)
+        }
         Err(error) => {
             warnings.push(format!("智商雷达: {error}"));
             None
         }
     };
-    let quota = match quota_result.and_then(|body| parse_quota(&body)) {
+    let quota = match quota_result {
         Ok(value) => Some(value),
         Err(error) => {
             warnings.push(format!("额度雷达: {error}"));
@@ -139,8 +154,33 @@ pub async fn fetch_codex_radar() -> Result<CodexRadarSnapshot, String> {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64,
+        used_fallback,
         warnings,
     })
+}
+
+/// 官网的主接口偶尔会返回 5xx，但同时发布了可供前端回退的公开快照。
+/// 先请求主接口，只有主接口明确失败时才使用快照，避免因快照更快返回而误报。
+async fn fetch_iq_snapshot(
+    client: &reqwest::Client,
+) -> Result<(RadarIqSnapshot, Option<String>), String> {
+    let api_result = fetch_text(client, IQ_URL, MAX_IQ_BYTES)
+        .await
+        .and_then(|body| parse_iq(&body));
+    let api_error = match api_result {
+        Ok(value) => return Ok((value, None)),
+        Err(error) => error,
+    };
+
+    match fetch_text(client, IQ_FALLBACK_URL, MAX_IQ_BYTES)
+        .await
+        .and_then(|body| parse_iq(&body))
+    {
+        Ok(value) => Ok((value, Some(api_error))),
+        Err(fallback_error) => Err(format!(
+            "主接口: {api_error}；官方回退快照: {fallback_error}"
+        )),
+    }
 }
 
 async fn fetch_text(client: &reqwest::Client, url: &str, max_bytes: u64) -> Result<String, String> {
@@ -182,9 +222,18 @@ fn parse_iq(body: &str) -> Result<RadarIqSnapshot, String> {
         .into_iter()
         .filter_map(|point| {
             let iq = point.iq?;
+            let total = if point.total > 0 {
+                point.total
+            } else {
+                point
+                    .valid_tasks
+                    .or(point.weighted_total)
+                    .and_then(positive_count)
+                    .unwrap_or(point.total_runs)
+            };
             if point.model.is_empty()
                 || point.effort.is_empty()
-                || point.total == 0
+                || total == 0
                 || !iq.is_finite()
                 || !(0.0..=150.0).contains(&iq)
             {
@@ -200,24 +249,49 @@ fn parse_iq(body: &str) -> Result<RadarIqSnapshot, String> {
                 average_minutes: point
                     .average_minutes
                     .filter(|value| value.is_finite() && *value >= 0.0),
-                total: point.total,
+                total,
                 runs_24h: point.runs_24h,
                 runs_total: point.runs_total,
-                source_updated_at: point.source_updated_at,
+                source_updated_at: point.source_updated_at.or(point.latest_graded_at),
             })
         })
         .collect::<Vec<_>>();
     if points.is_empty() {
         return Err("没有可用的智商样本".to_string());
     }
+    let source_updated_at = if payload.source_updated_at.trim().is_empty() {
+        points
+            .iter()
+            .filter_map(|point| point.source_updated_at.as_deref())
+            .max()
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        payload.source_updated_at
+    };
     Ok(RadarIqSnapshot {
-        source_updated_at: payload.source_updated_at,
+        source_updated_at,
         runs_24h_total: payload.runs_24h_total,
         runs_total: payload.runs_total,
-        benchmark_id: payload.benchmark_id,
-        score_label: payload.score_label,
+        benchmark_id: if payload.benchmark_id.is_empty() {
+            "deep-swe".to_string()
+        } else {
+            payload.benchmark_id
+        },
+        score_label: if payload.score_label.is_empty() {
+            "Weighted pass rate".to_string()
+        } else {
+            payload.score_label
+        },
         points,
     })
+}
+
+fn positive_count(value: f64) -> Option<u32> {
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    Some(value.min(u32::MAX as f64).round() as u32)
 }
 
 fn parse_quota(body: &str) -> Result<RadarQuotaSnapshot, String> {
@@ -311,6 +385,22 @@ mod tests {
         assert_eq!(parsed.points.len(), 1);
         assert_eq!(parsed.points[0].model, "gpt-5.6-sol");
         assert_eq!(parsed.runs_24h_total, 648);
+    }
+
+    #[test]
+    fn parses_official_iq_fallback_snapshot_shape() {
+        let payload = r#"{
+          "source_updated_at":"2026/8/15 23:33:30",
+          "runs_24h_total":807,
+          "runs_total":33321,
+          "points":[
+            {"model":"gpt-5.6-sol","effort":"low","iq":73.21,"valid_tasks":420.0,"total_runs":1560,"runs_24h":13,"runs_total":1560,"latest_graded_at":"2026/8/15 23:33:30"}
+          ]
+        }"#;
+        let parsed = parse_iq(payload).unwrap();
+        assert_eq!(parsed.points.len(), 1);
+        assert_eq!(parsed.points[0].total, 420);
+        assert_eq!(parsed.source_updated_at, "2026/8/15 23:33:30");
     }
 
     #[test]
