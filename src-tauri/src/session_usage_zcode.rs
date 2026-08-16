@@ -9,15 +9,16 @@ use crate::database::Database;
 use crate::error::Result;
 use crate::schema::{DATA_SOURCE_ZCODE_SESSION, INPUT_TOKEN_SEMANTICS_TOTAL};
 use crate::session_usage::{
-    find_model_pricing, get_sync_state, metadata_modified_nanos, should_skip_session_insert,
-    update_sync_state, DedupKey, SessionSyncResult,
+    find_model_pricing, get_sync_state, metadata_modified_nanos, modified_nanos_to_seconds,
+    project_name_from_path, should_skip_session_insert, update_session_project, update_sync_state,
+    DedupKey, SessionSyncResult,
 };
 use rusqlite::Connection;
 use rust_decimal::Decimal;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 const ZCODE_APP_TYPE: &str = "zcode";
 const ZCODE_PROVIDER_ID: &str = "_zcode_session";
@@ -48,24 +49,29 @@ pub fn sync_zcode_usage(db: &Database) -> Result<SessionSyncResult> {
     let db_path_str = db_path.to_string_lossy().to_string();
     let file_modified = source_modified_nanos(&db_path)?;
     let (last_modified, _) = get_sync_state(db, &db_path_str)?;
+
+    let source = Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    source.busy_timeout(Duration::from_secs(2))?;
+    let sessions = query_sessions(&source)?;
     if file_modified <= last_modified {
+        for (session_id, _, project_path) in sessions.iter() {
+            let project = project_name_from_path(Some(project_path));
+            update_session_project(db, ZCODE_APP_TYPE, session_id, &project)?;
+        }
         return Ok(SessionSyncResult {
             files_scanned: 1,
             ..Default::default()
         });
     }
-
-    let source = Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    source.busy_timeout(Duration::from_secs(2))?;
-
-    let sessions = query_sessions(&source)?;
     let mut result = SessionSyncResult {
         files_scanned: 1,
         ..Default::default()
     };
     let mut has_error = false;
 
-    for (session_id, watermark) in sessions.iter() {
+    for (session_id, watermark, project_path) in sessions.iter() {
+        let project = project_name_from_path(Some(project_path));
+        update_session_project(db, ZCODE_APP_TYPE, session_id, &project)?;
         let sync_key = format!("{db_path_str}:{session_id}");
         let (session_last_modified, _) = get_sync_state(db, &sync_key)?;
         if *watermark <= session_last_modified {
@@ -77,7 +83,14 @@ pub fn sync_zcode_usage(db: &Database) -> Result<SessionSyncResult> {
 
         for usage in usages {
             let request_id = format!("zcode_session:{}", usage.id);
-            match insert_zcode_usage(db, &request_id, &usage, session_id) {
+            match insert_zcode_usage(
+                db,
+                &request_id,
+                &usage,
+                session_id,
+                &project,
+                modified_nanos_to_seconds(file_modified),
+            ) {
                 Ok(true) => result.imported = result.imported.saturating_add(1),
                 Ok(false) => result.skipped = result.skipped.saturating_add(1),
                 Err(error) => {
@@ -148,20 +161,21 @@ fn append_path_suffix(path: &PathBuf, suffix: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-fn query_sessions(conn: &Connection) -> Result<Vec<(String, i64)>> {
+fn query_sessions(conn: &Connection) -> Result<Vec<(String, i64, String)>> {
     let mut stmt = conn.prepare(
         "SELECT s.id,
                 CASE
                     WHEN COALESCE(MAX(m.completed_at), 0) > COALESCE(s.time_updated, s.time_created, 0)
                     THEN COALESCE(MAX(m.completed_at), 0)
                     ELSE COALESCE(s.time_updated, s.time_created, 0)
-                END
+                END,
+                COALESCE(NULLIF(s.directory, ''), NULLIF(s.path, ''), '')
          FROM session s
          LEFT JOIN model_usage m ON m.session_id = s.id
          GROUP BY s.id
          ORDER BY 2",
     )?;
-    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
     let mut sessions = Vec::new();
     for row in rows {
         sessions.push(row?);
@@ -223,16 +237,14 @@ fn clamp_token_count(value: i64) -> u32 {
     value.clamp(0, u32::MAX as i64) as u32
 }
 
-fn timestamp_ms_to_unix_seconds(timestamp_ms: Option<i64>) -> i64 {
+fn timestamp_ms_to_unix_seconds(
+    timestamp_ms: Option<i64>,
+    fallback_created_at: Option<i64>,
+) -> Option<i64> {
     timestamp_ms
         .filter(|timestamp| *timestamp > 0)
         .map(|timestamp| timestamp / 1000)
-        .unwrap_or_else(|| {
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .map(|duration| duration.as_secs() as i64)
-                .unwrap_or(0)
-        })
+        .or(fallback_created_at)
 }
 
 fn insert_zcode_usage(
@@ -240,9 +252,16 @@ fn insert_zcode_usage(
     request_id: &str,
     usage: &ZcodeModelUsage,
     session_id: &str,
+    project: &str,
+    fallback_created_at: Option<i64>,
 ) -> Result<bool> {
     db.with_conn(|conn| {
-        let created_at = timestamp_ms_to_unix_seconds(usage.started_at_ms.or(usage.completed_at_ms));
+        let Some(created_at) = timestamp_ms_to_unix_seconds(
+            usage.started_at_ms.or(usage.completed_at_ms),
+            fallback_created_at,
+        ) else {
+            return Ok(false);
+        };
         let output_tokens = usage.output_tokens.saturating_add(usage.reasoning_tokens);
         let dedup_key = DedupKey {
             app_type: ZCODE_APP_TYPE,
@@ -290,8 +309,8 @@ fn insert_zcode_usage(
                 input_token_semantics,
                 input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                 latency_ms, first_token_ms, status_code, error_message, session_id,
-                provider_type, is_streaming, cost_multiplier, created_at, data_source
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                provider_type, is_streaming, cost_multiplier, created_at, data_source, project
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             rusqlite::params![
                 request_id,
                 ZCODE_PROVIDER_ID,
@@ -318,6 +337,7 @@ fn insert_zcode_usage(
                 "1.0",
                 created_at,
                 DATA_SOURCE_ZCODE_SESSION,
+                project,
             ],
         )?;
 
@@ -338,10 +358,13 @@ mod tests {
     #[test]
     fn converts_zcode_milliseconds_to_seconds() {
         assert_eq!(
-            timestamp_ms_to_unix_seconds(Some(1_780_000_000_123)),
-            1_780_000_000
+            timestamp_ms_to_unix_seconds(Some(1_780_000_000_123), None),
+            Some(1_780_000_000)
         );
-        assert!(timestamp_ms_to_unix_seconds(Some(0)) > 0);
+        assert_eq!(
+            timestamp_ms_to_unix_seconds(Some(0), Some(1_700_000_000)),
+            Some(1_700_000_000)
+        );
     }
 
     #[test]
@@ -350,6 +373,8 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE session (
                 id TEXT PRIMARY KEY,
+                directory TEXT,
+                path TEXT,
                 time_created INTEGER,
                 time_updated INTEGER
             );
@@ -370,8 +395,15 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO session (id, time_created, time_updated) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["session-1", 1_000i64, 2_000i64],
+            "INSERT INTO session (id, directory, path, time_created, time_updated)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                "session-1",
+                r"D:\work\usage-pulse",
+                r"D:\work\usage-pulse",
+                1_000i64,
+                2_000i64
+            ],
         )
         .unwrap();
         conn.execute(
@@ -416,7 +448,14 @@ mod tests {
         .unwrap();
 
         let sessions = query_sessions(&conn).unwrap();
-        assert_eq!(sessions, vec![("session-1".to_string(), 1_780_000_001_000)]);
+        assert_eq!(
+            sessions,
+            vec![(
+                "session-1".to_string(),
+                1_780_000_001_000,
+                r"D:\work\usage-pulse".to_string()
+            )]
+        );
 
         let (usages, has_incomplete_usage) = query_model_usages(&conn, "session-1").unwrap();
         assert!(has_incomplete_usage);

@@ -15,8 +15,10 @@ Usage Beacon turns the usage records already written by AI coding tools into one
 
 ## Highlights
 
-- **One view for multiple coding tools** — Claude Code, Codex CLI, Gemini CLI, OpenCode, ZCode, and Grok Build.
+- **One view for multiple coding tools** — Claude Code, Codex CLI, Gemini CLI, OpenCode, ZCode, Grok Build, DeepSeek Harness, and Hermes Agent.
 - **Useful analytics** — daily trends, cumulative trends, provider/model breakdowns, cache efficiency, token composition, request details, and paginated logs.
+- **Workflow-level analysis** — project and session rankings expose where tokens and estimated cost are actually concentrated.
+- **Sync health visibility** — every sync reports which local source was detected, how many records were imported, and whether files were deferred or failed.
 - **Linked filters** — device, source, provider, model, and date filters operate on the same result set.
 - **Live pricing with a local cache** — refreshes the public OpenRouter model catalog and keeps the latest usable price locally for consistent calculations.
 - **Codex Radar in the dashboard** — IQ metrics and quota radar are displayed in-app instead of opening a separate website.
@@ -35,6 +37,8 @@ The importers read usage metadata from local files or databases. They do not nee
 | OpenCode | `~/.local/share/opencode/opencode.db` | Override with `OPENCODE_DB` or `XDG_DATA_HOME`. |
 | ZCode | `~/.zcode/cli/db/db.sqlite` | Reads the `model_usage` table; override with `ZCODE_DB`. |
 | Grok Build | `~/.grok/**/updates.jsonl` | Imports completed turn usage after the settle window. |
+| DeepSeek Harness | `%USERPROFILE%/.dsh/sessions/**/session.jsonl.zstd` | Reads official JSONL usage events; supports raw `.jsonl` and optional SQLite via `DEEPSEEK_HARNESS_SESSIONS` / `DEEPSEEK_HARNESS_SQLITE`. |
+| Hermes Agent | `%LOCALAPPDATA%/hermes/state.db` or `HERMES_HOME/state.db` | Reads the official `session_model_usage` counters without reading message content; cumulative rows are imported as deltas. |
 
 On Windows, `~` means `%USERPROFILE%`. The application database is stored at:
 
@@ -55,6 +59,8 @@ flowchart LR
 ```
 
 Each source is synchronized independently, so a missing or malformed source does not prevent the other sources from being imported. Records are deduplicated before they enter the shared statistics layer.
+
+If a historical record has no event timestamp, the importer uses the source file/database modification time instead of the import time. Latency is only averaged for actual proxy requests; session-log rows without request timing are shown as unavailable rather than as `0 ms`.
 
 ## Privacy and network behavior
 
@@ -140,7 +146,7 @@ Before submitting a change:
 
 ## 中文简介
 
-Usage Beacon 是一个本地优先的 AI 编程用量分析桌面工具：把 Claude Code、Codex CLI、Gemini CLI、OpenCode、ZCode、Grok Build 的本地记录统一到一个界面中，查看 token、模型、来源、设备、缓存效率、趋势和费用估算。
+Usage Beacon 是一个本地优先的 AI 编程用量分析桌面工具：把 Claude Code、Codex CLI、Gemini CLI、OpenCode、ZCode、Grok Build、DeepSeek Harness、Hermes Agent 的本地记录统一到一个界面中，查看 token、模型、来源、设备、缓存效率、趋势和费用估算。
 
 它还支持 OpenRouter 价格联网刷新并缓存到本地、Codex Radar 智商与额度雷达、跨电脑 JSON 导入导出，以及“只看本机 / 查看合并数据”的切换。默认浅色界面，所有筛选条件联动，取数和统计仍以本地记录为基础。
 

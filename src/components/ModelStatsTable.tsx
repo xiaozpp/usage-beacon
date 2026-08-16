@@ -1,5 +1,5 @@
 import type { ModelStats as ModelStatsType, RadarIqPoint } from "../types/usage";
-import { fmtInt, fmtUsd, fmtTokens } from "../lib/format";
+import { fmtInt, fmtUsd, fmtTokens, isPotentiallyUnpriced } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import { useCodexRadar } from "../lib/hooks";
 
@@ -60,7 +60,9 @@ export function ModelStatsTable({ data, isLoading }: Props) {
                       {fmtTokens(row.totalTokens)}
                     </td>
                     <td className="px-4 py-2 text-right tabular-nums">
-                      {fmtUsd(row.totalCost)}
+                      {isPotentiallyUnpriced(row.totalCost, row.totalTokens)
+                        ? t("breakdown.unpriced")
+                        : fmtUsd(row.totalCost)}
                     </td>
                     <td
                       className="radar-price-cell px-4 py-2 text-right tabular-nums"
@@ -69,7 +71,9 @@ export function ModelStatsTable({ data, isLoading }: Props) {
                       {radarRange ?? "—"}
                     </td>
                     <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
-                      {fmtUsd(row.avgCostPerRequest)}
+                      {isPotentiallyUnpriced(row.totalCost, row.totalTokens)
+                        ? t("breakdown.unpriced")
+                        : fmtUsd(row.avgCostPerRequest)}
                     </td>
                   </tr>
                 );

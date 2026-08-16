@@ -1,7 +1,13 @@
 import { X } from "lucide-react";
 import type { RequestLogDetail } from "../types/usage";
 import { useRequestDetail } from "../lib/hooks";
-import { fmtDateTime, fmtLatency, fmtTokens, fmtUsd } from "../lib/format";
+import {
+  fmtDateTime,
+  fmtLatency,
+  fmtTokens,
+  fmtUsd,
+  isPotentiallyUnpriced,
+} from "../lib/format";
 import { useI18n } from "../lib/i18n";
 
 interface Props {
@@ -72,6 +78,7 @@ function DetailBody({ detail }: { detail: RequestLogDetail }) {
         <Field label={t("detail.provider")} value={detail.providerName} />
         <Field label={t("detail.appType")} value={detail.appType} />
         <Field label={t("detail.dataSource")} value={detail.dataSource} />
+        {detail.project && <Field label={t("detail.project")} value={detail.project} />}
         <Field label={t("detail.time")} value={fmtDateTime(detail.createdAt)} />
       </Section>
 
@@ -102,7 +109,17 @@ function DetailBody({ detail }: { detail: RequestLogDetail }) {
         <Field label={t("detail.cacheWriteCost")} value={fmtUsd(detail.cacheCreationCostUsd)} />
         <Field
           label={t("detail.totalCost")}
-          value={fmtUsd(detail.totalCostUsd)}
+          value={
+            isPotentiallyUnpriced(
+              detail.totalCostUsd,
+              detail.freshInputTokens +
+                detail.outputTokens +
+                detail.cacheReadTokens +
+                detail.cacheCreationTokens,
+            )
+              ? t("breakdown.unpriced")
+              : fmtUsd(detail.totalCostUsd)
+          }
           emphasize
         />
       </Section>

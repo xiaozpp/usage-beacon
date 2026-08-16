@@ -8,15 +8,15 @@ use crate::database::Database;
 use crate::error::Result;
 use crate::schema::INPUT_TOKEN_SEMANTICS_LEGACY;
 use crate::session_usage::{
-    find_model_pricing, get_sync_state, metadata_modified_nanos, should_skip_session_insert,
-    update_sync_state, DedupKey, SessionSyncResult,
+    find_model_pricing, get_sync_state, metadata_modified_nanos, modified_nanos_to_seconds,
+    project_name_from_path, should_skip_session_insert, update_session_project, update_sync_state,
+    DedupKey, SessionSyncResult,
 };
 use rust_decimal::Decimal;
 use serde_json::Value;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::time::SystemTime;
 
 #[derive(Debug)]
 struct OpenCodeMessageData {
@@ -46,25 +46,31 @@ pub fn sync_opencode_usage(db: &Database) -> Result<SessionSyncResult> {
     }
 
     let (last_modified, _) = get_sync_state(db, &db_path_str)?;
-    if file_modified <= last_modified {
-        return Ok(SessionSyncResult {
-            files_scanned: 1,
-            ..Default::default()
-        });
-    }
 
     let source = rusqlite::Connection::open_with_flags(
         &db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     let sessions = query_sessions(&source)?;
+    if file_modified <= last_modified {
+        for (session_id, _, project_path) in sessions.iter() {
+            let project = project_name_from_path(Some(project_path));
+            update_session_project(db, "opencode", session_id, &project)?;
+        }
+        return Ok(SessionSyncResult {
+            files_scanned: 1,
+            ..Default::default()
+        });
+    }
     let mut result = SessionSyncResult {
         files_scanned: 1,
         ..Default::default()
     };
     let mut has_error = false;
 
-    for (session_id, watermark) in sessions.iter() {
+    for (session_id, watermark, project_path) in sessions.iter() {
+        let project = project_name_from_path(Some(project_path));
+        update_session_project(db, "opencode", session_id, &project)?;
         let sync_key = format!("{db_path_str}:{session_id}");
         let (session_last_modified, _) = get_sync_state(db, &sync_key)?;
         if *watermark <= session_last_modified {
@@ -85,7 +91,14 @@ pub fn sync_opencode_usage(db: &Database) -> Result<SessionSyncResult> {
 
         for (message_id, message) in messages {
             let request_id = format!("opencode_session:{session_id}:{message_id}");
-            match insert_opencode_message(db, &request_id, &message, session_id) {
+            match insert_opencode_message(
+                db,
+                &request_id,
+                &message,
+                session_id,
+                &project,
+                modified_nanos_to_seconds(file_modified),
+            ) {
                 Ok(true) => result.imported = result.imported.saturating_add(1),
                 Ok(false) => result.skipped = result.skipped.saturating_add(1),
                 Err(error) => {
@@ -145,16 +158,17 @@ fn get_opencode_data_dir() -> PathBuf {
         .join("opencode")
 }
 
-fn query_sessions(conn: &rusqlite::Connection) -> Result<Vec<(String, i64)>> {
+fn query_sessions(conn: &rusqlite::Connection) -> Result<Vec<(String, i64, String)>> {
     let mut stmt = conn.prepare(
         "SELECT s.id,
-                MAX(s.time_updated, COALESCE(MAX(m.time_updated), s.time_updated))
+                MAX(s.time_updated, COALESCE(MAX(m.time_updated), s.time_updated)),
+                COALESCE(NULLIF(s.directory, ''), NULLIF(s.path, ''), '')
          FROM session s
          LEFT JOIN message m ON m.session_id = s.id
          GROUP BY s.id
          ORDER BY 2",
     )?;
-    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
     let mut sessions = Vec::new();
     for row in rows {
         sessions.push(row?);
@@ -250,15 +264,15 @@ fn insert_opencode_message(
     request_id: &str,
     message: &OpenCodeMessageData,
     session_id: &str,
+    project: &str,
+    fallback_created_at: Option<i64>,
 ) -> Result<bool> {
     db.with_conn(|conn| {
-        let created_at = if message.timestamp_ms > 0 {
-            message.timestamp_ms / 1000
-        } else {
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .map(|duration| duration.as_secs() as i64)
-                .unwrap_or(0)
+        let Some(created_at) = (message.timestamp_ms > 0)
+            .then(|| message.timestamp_ms / 1000)
+            .or(fallback_created_at)
+        else {
+            return Ok(false);
         };
         let output_tokens = message.output_tokens.saturating_add(message.reasoning_tokens);
         let dedup_key = DedupKey {
@@ -315,8 +329,8 @@ fn insert_opencode_message(
                 input_token_semantics,
                 input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                 latency_ms, first_token_ms, status_code, error_message, session_id,
-                provider_type, is_streaming, cost_multiplier, created_at, data_source
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                provider_type, is_streaming, cost_multiplier, created_at, data_source, project
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             rusqlite::params![
                 request_id,
                 "_opencode_session",
@@ -343,6 +357,7 @@ fn insert_opencode_message(
                 "1.0",
                 created_at,
                 "opencode_session",
+                project,
             ],
         )?;
 

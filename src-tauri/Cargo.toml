@@ -33,3 +33,4 @@ dirs = "5"
 thiserror = "1"
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "system-proxy"] }
 regex = "1"
+zstd = "0.13"

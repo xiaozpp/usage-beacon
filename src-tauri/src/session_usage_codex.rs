@@ -9,8 +9,9 @@ use crate::database::Database;
 use crate::error::Result;
 use crate::schema::INPUT_TOKEN_SEMANTICS_LEGACY;
 use crate::session_usage::{
-    find_model_pricing, get_sync_state, metadata_modified_nanos, should_skip_session_insert,
-    update_sync_state, DedupKey, SessionSyncResult,
+    find_model_pricing, get_sync_state, metadata_modified_nanos, modified_nanos_to_seconds,
+    parse_rfc3339_timestamp, project_name_from_path, should_skip_session_insert, update_sync_state,
+    DedupKey, SessionSyncResult,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension;
@@ -21,7 +22,6 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::SystemTime;
 use uuid::Uuid;
 
 const CODEX_THREAD_REQUEST_ID_PREFIX: &str = "codex_session:thread-v1";
@@ -29,7 +29,7 @@ const CODEX_USAGE_PARSER_VERSION_KEY: &str = "codex_usage_parser_version";
 // CC Switch's Codex importer leaves this column at the schema default (legacy).
 // Keep the same marker so fresh-input aggregation follows CC's stored-data
 // semantics for Codex session rows.
-const CODEX_USAGE_PARSER_VERSION: &str = "thread-v2";
+const CODEX_USAGE_PARSER_VERSION: &str = "thread-v4-filter-codex-workspace";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct CumulativeTokens {
@@ -160,6 +160,7 @@ struct ParsedCodexFile {
     root_thread_id: Option<String>,
     root_meta_seen: bool,
     root_timestamp: Option<DateTime<Utc>>,
+    project: String,
     parent: ParentResolution,
     token_events: Vec<ParsedTokenEvent>,
     line_offset: i64,
@@ -353,6 +354,46 @@ fn parse_timestamp(value: Option<&Value>) -> Option<DateTime<Utc>> {
         .map(|value| value.with_timezone(&Utc))
 }
 
+/// Codex Desktop 会把任务工作区放在
+/// `Documents/Codex/YYYY-MM-DD/<workspace>` 下。这里的最后一级是
+/// Codex 任务工作区 slug，不是用户项目名，不能进入项目排行。
+fn codex_project_name_from_path(value: Option<&str>) -> String {
+    if is_codex_managed_workspace(value) {
+        String::new()
+    } else {
+        project_name_from_path(value)
+    }
+}
+
+fn is_codex_managed_workspace(value: Option<&str>) -> bool {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let segments = value
+        .trim_end_matches(['\\', '/'])
+        .split(['\\', '/'])
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+
+    segments.windows(4).any(|window| {
+        window[0].eq_ignore_ascii_case("Documents")
+            && window[1].eq_ignore_ascii_case("Codex")
+            && is_codex_workspace_date(window[2])
+            && !window[3].is_empty()
+    })
+}
+
+fn is_codex_workspace_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+}
+
 fn parse_signature_counters(value: Option<&Value>) -> Option<TokenCountersSignature> {
     let value = value?.as_object()?;
     Some(TokenCountersSignature {
@@ -543,6 +584,7 @@ fn parse_codex_file(file_path: &Path, root_thread_id: Option<String>) -> Result<
     let reader = BufReader::new(file);
     let mut root_meta_seen = false;
     let mut root_timestamp = None;
+    let mut project = String::new();
     let mut parent = ParentResolution::None;
     let mut current_model = "unknown".to_string();
     let mut previous_total = None;
@@ -584,6 +626,7 @@ fn parse_codex_file(file_path: &Path, root_thread_id: Option<String>) -> Result<
                 root_meta_seen = true;
                 root_timestamp = parse_timestamp(value.get("timestamp"));
                 let payload = value.get("payload").unwrap_or(&Value::Null);
+                project = codex_project_name_from_path(payload.get("cwd").and_then(Value::as_str));
                 parent = explicit_parent_from_meta(payload);
 
                 let meta_thread_id = non_empty_string(
@@ -703,6 +746,7 @@ fn parse_codex_file(file_path: &Path, root_thread_id: Option<String>) -> Result<
         root_thread_id,
         root_meta_seen,
         root_timestamp,
+        project,
         parent,
         token_events,
         line_offset,
@@ -1045,6 +1089,11 @@ fn sync_single_codex_file(
         }
     };
 
+    let fallback_created_at = parsed
+        .root_timestamp
+        .map(|timestamp| timestamp.timestamp())
+        .or_else(|| modified_nanos_to_seconds(file_modified));
+
     if let Ok(mut caches) = replay_caches().lock() {
         caches.pending.remove(file_path);
     }
@@ -1065,7 +1114,14 @@ fn sync_single_codex_file(
         }
 
         let request_id = format!("{CODEX_THREAD_REQUEST_ID_PREFIX}:{root_thread_id}:{event_index}");
-        match insert_codex_session_entry(db, &request_id, event, root_thread_id)? {
+        match insert_codex_session_entry(
+            db,
+            &request_id,
+            event,
+            root_thread_id,
+            &parsed.project,
+            fallback_created_at,
+        )? {
             true => result.imported = result.imported.saturating_add(1),
             false => result.skipped = result.skipped.saturating_add(1),
         }
@@ -1080,19 +1136,15 @@ fn insert_codex_session_entry(
     request_id: &str,
     event: &ParsedTokenEvent,
     session_id: &str,
+    project: &str,
+    fallback_created_at: Option<i64>,
 ) -> Result<bool> {
     db.with_conn(|conn| {
-        let created_at = event
-            .timestamp
-            .as_deref()
-            .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
-            .map(|timestamp| timestamp.timestamp())
-            .unwrap_or_else(|| {
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map(|duration| duration.as_secs() as i64)
-                    .unwrap_or(0)
-            });
+        let Some(created_at) = parse_rfc3339_timestamp(event.timestamp.as_deref())
+            .or(fallback_created_at)
+        else {
+            return Ok(false);
+        };
 
         let key = DedupKey {
             app_type: "codex",
@@ -1136,8 +1188,8 @@ fn insert_codex_session_entry(
                 input_token_semantics,
                 input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                 latency_ms, first_token_ms, status_code, error_message, session_id,
-                provider_type, is_streaming, cost_multiplier, created_at, data_source
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                provider_type, is_streaming, cost_multiplier, created_at, data_source, project
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             rusqlite::params![
                 request_id,
                 "_codex_session",
@@ -1164,6 +1216,7 @@ fn insert_codex_session_entry(
                 "1.0",
                 created_at,
                 "codex_session",
+                project,
             ],
         )?;
         Ok(inserted > 0)
@@ -1205,6 +1258,17 @@ mod tests {
         assert_eq!(
             normalize_codex_model("azure/gpt-5.6-luna-20260305"),
             "gpt-5.6-luna"
+        );
+    }
+
+    #[test]
+    fn ignores_codex_managed_workspaces_as_projects() {
+        let workspace = r"C:\Users\Administrator\Documents\Codex\2026-08-16\she";
+        assert!(is_codex_managed_workspace(Some(workspace)));
+        assert_eq!(codex_project_name_from_path(Some(workspace)), "");
+        assert_eq!(
+            codex_project_name_from_path(Some(r"D:\work\LLM tools\usage-pulse")),
+            "usage-pulse"
         );
     }
 

@@ -1,13 +1,32 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { fetchCodexRadar, fetchDevices, fetchModelPricing, fetchUsageSummary, fetchDailyTrends, fetchModelStats, fetchProviderStats, fetchRequestLogs, fetchRequestDetail, refreshModelPricing, syncSessionLogs, type UsageQueryParams } from "./api";
+import {
+  fetchCodexRadar,
+  fetchRuntimeStats,
+  fetchDevices,
+  fetchModelPricing,
+  fetchUsageSummary,
+  fetchDailyTrends,
+  fetchModelStats,
+  fetchProjectStats,
+  fetchSessionStats,
+  fetchProviderStats,
+  fetchRequestLogs,
+  fetchRequestDetail,
+  refreshModelPricing,
+  syncSessionLogs,
+  type UsageQueryParams,
+} from "./api";
 import type { LogFilters } from "../types/usage";
 
 export const usageKeys = {
   all: ["usage"] as const,
   summary: (params: UsageQueryParams) => ["usage", "summary", params] as const,
+  runtimeStats: (params: UsageQueryParams) => ["usage", "runtime", params] as const,
   trends: (params: UsageQueryParams) => ["usage", "trends", params] as const,
   providerStats: (params: UsageQueryParams) => ["usage", "providers", params] as const,
   modelStats: (params: UsageQueryParams) => ["usage", "models", params] as const,
+  projectStats: (params: UsageQueryParams) => ["usage", "projects", params] as const,
+  sessionStats: (params: UsageQueryParams) => ["usage", "sessions", params] as const,
   logs: (filters: LogFilters, page: number, pageSize: number) =>
     ["usage", "logs", filters, page, pageSize] as const,
   detail: (requestId: string) => ["usage", "detail", requestId] as const,
@@ -40,6 +59,14 @@ export function useUsageSummary(params: UsageQueryParams, refetchMs = 30000) {
   });
 }
 
+export function useRuntimeStats(params: UsageQueryParams, refetchMs = 30000) {
+  return useQuery({
+    queryKey: usageKeys.runtimeStats(params),
+    queryFn: () => fetchRuntimeStats(params),
+    ...autoRefreshOptions(refetchMs),
+  });
+}
+
 export function useDailyTrends(params: UsageQueryParams, refetchMs = 30000) {
   return useQuery({
     queryKey: usageKeys.trends(params),
@@ -60,6 +87,22 @@ export function useModelStats(params: UsageQueryParams, refetchMs = 30000) {
   return useQuery({
     queryKey: usageKeys.modelStats(params),
     queryFn: () => fetchModelStats(params),
+    ...autoRefreshOptions(refetchMs),
+  });
+}
+
+export function useProjectStats(params: UsageQueryParams, refetchMs = 30000) {
+  return useQuery({
+    queryKey: usageKeys.projectStats(params),
+    queryFn: () => fetchProjectStats(params),
+    ...autoRefreshOptions(refetchMs),
+  });
+}
+
+export function useSessionStats(params: UsageQueryParams, refetchMs = 30000) {
+  return useQuery({
+    queryKey: usageKeys.sessionStats(params),
+    queryFn: () => fetchSessionStats(params),
     ...autoRefreshOptions(refetchMs),
   });
 }

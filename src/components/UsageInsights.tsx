@@ -34,7 +34,13 @@ const TONE_CLASS: Record<Tone, string> = {
   amber: "insight-card--amber",
 };
 
-export function UsageInsights({ summary, trends, providers, models, isLoading }: Props) {
+export function UsageInsights({
+  summary,
+  trends,
+  providers,
+  models,
+  isLoading,
+}: Props) {
   const { t } = useI18n();
   const totalCost = toNumber(summary?.totalCost);
   const totalRequests = summary?.totalRequests ?? 0;
@@ -193,7 +199,9 @@ export function UsageInsights({ summary, trends, providers, models, isLoading }:
                         <span>{fmtPercent(row.successRate)} {t("insights.success")}</span>
                         <span className="provider-latency">
                           <Timer className="h-3 w-3" />
-                          {fmtLatency(row.avgLatencyMs)}
+                          {row.avgLatencyMs === null
+                            ? t("common.notAvailable")
+                            : fmtLatency(row.avgLatencyMs)}
                         </span>
                       </div>
                     </div>

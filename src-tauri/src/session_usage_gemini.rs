@@ -8,15 +8,14 @@ use crate::database::Database;
 use crate::error::Result;
 use crate::schema::INPUT_TOKEN_SEMANTICS_LEGACY;
 use crate::session_usage::{
-    find_model_pricing, get_sync_state, metadata_modified_nanos, should_skip_session_insert,
-    update_sync_state, DedupKey, SessionSyncResult,
+    find_model_pricing, get_sync_state, metadata_modified_nanos, modified_nanos_to_seconds,
+    parse_rfc3339_timestamp, should_skip_session_insert, update_sync_state, DedupKey,
+    SessionSyncResult,
 };
-use chrono::DateTime;
 use rust_decimal::Decimal;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct GeminiTokens {
@@ -137,7 +136,15 @@ fn sync_single_gemini_file(db: &Database, file_path: &Path) -> Result<(u32, u32)
             session_id.unwrap_or("unknown")
         );
 
-        match insert_gemini_session_entry(db, &request_id, tokens, model, session_id, timestamp)? {
+        match insert_gemini_session_entry(
+            db,
+            &request_id,
+            tokens,
+            model,
+            session_id,
+            timestamp,
+            modified_nanos_to_seconds(file_modified),
+        )? {
             true => imported += 1,
             false => skipped += 1,
         }
@@ -169,17 +176,12 @@ fn insert_gemini_session_entry(
     model: &str,
     session_id: Option<&str>,
     timestamp: Option<&str>,
+    fallback_created_at: Option<i64>,
 ) -> Result<bool> {
     db.with_conn(|conn| {
-        let created_at = timestamp
-            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| value.timestamp())
-            .unwrap_or_else(|| {
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map(|duration| duration.as_secs() as i64)
-                    .unwrap_or(0)
-            });
+        let Some(created_at) = parse_rfc3339_timestamp(timestamp).or(fallback_created_at) else {
+            return Ok(false);
+        };
         let output_tokens = tokens.output.saturating_add(tokens.thoughts);
         let dedup_key = DedupKey {
             app_type: "gemini",

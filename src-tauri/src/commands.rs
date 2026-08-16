@@ -9,7 +9,10 @@ use crate::session_usage::{
     recost_zero_cost_logs, sync_all_session_logs, RecostResult, SessionSyncResult,
 };
 use crate::usage_stats::{self, LogFilters, ModelPricingInfo, PaginatedLogs, UsageQuery};
-use crate::usage_stats::{DailyStats, ModelStats, ProviderStats, RequestLogDetail, UsageSummary};
+use crate::usage_stats::{
+    DailyStats, ModelStats, ProviderStats, RequestLogDetail, RuntimeStats, UsageBreakdownStats,
+    UsageSummary,
+};
 use std::sync::Arc;
 use tauri::State;
 
@@ -48,6 +51,28 @@ pub fn fetch_usage_summary(
         device_id,
     };
     usage_stats::get_usage_summary(db.inner(), &q).map_err(|e| e.to_string())
+}
+
+/// 获取当前筛选范围内可用的会话运行指标。
+#[tauri::command]
+pub fn fetch_runtime_stats(
+    db: State<'_, Arc<Database>>,
+    start_date: i64,
+    end_date: i64,
+    app_type: Option<String>,
+    provider_name: Option<String>,
+    model: Option<String>,
+    device_id: Option<String>,
+) -> Result<RuntimeStats, String> {
+    let q = UsageQuery {
+        start_date,
+        end_date,
+        app_type,
+        provider_name,
+        model,
+        device_id,
+    };
+    usage_stats::get_runtime_stats(db.inner(), &q).map_err(|e| e.to_string())
 }
 
 /// 获取日趋势
@@ -114,6 +139,50 @@ pub fn fetch_model_stats(
         device_id,
     };
     usage_stats::get_model_stats(db.inner(), &q).map_err(|e| e.to_string())
+}
+
+/// 获取项目统计
+#[tauri::command]
+pub fn fetch_project_stats(
+    db: State<'_, Arc<Database>>,
+    start_date: i64,
+    end_date: i64,
+    app_type: Option<String>,
+    provider_name: Option<String>,
+    model: Option<String>,
+    device_id: Option<String>,
+) -> Result<Vec<UsageBreakdownStats>, String> {
+    let q = UsageQuery {
+        start_date,
+        end_date,
+        app_type,
+        provider_name,
+        model,
+        device_id,
+    };
+    usage_stats::get_project_stats(db.inner(), &q).map_err(|e| e.to_string())
+}
+
+/// 获取会话统计
+#[tauri::command]
+pub fn fetch_session_stats(
+    db: State<'_, Arc<Database>>,
+    start_date: i64,
+    end_date: i64,
+    app_type: Option<String>,
+    provider_name: Option<String>,
+    model: Option<String>,
+    device_id: Option<String>,
+) -> Result<Vec<UsageBreakdownStats>, String> {
+    let q = UsageQuery {
+        start_date,
+        end_date,
+        app_type,
+        provider_name,
+        model,
+        device_id,
+    };
+    usage_stats::get_session_stats(db.inner(), &q).map_err(|e| e.to_string())
 }
 
 /// 获取请求日志

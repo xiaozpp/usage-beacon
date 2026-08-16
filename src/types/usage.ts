@@ -3,6 +3,7 @@
 export interface UsageSummary {
   totalRequests: number;
   totalCost: string;
+  unpricedRequests: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -10,6 +11,21 @@ export interface UsageSummary {
   realTotalTokens: number;
   successRate: number;
   cacheHitRate: number;
+}
+
+export interface RuntimeStats {
+  sourceCount: number;
+  sessionCount: number;
+  turns: number;
+  steps: number;
+  llmMs: number;
+  toolMs: number;
+  ttftMs: number;
+  ttftSteps: number;
+  decodeMs: number;
+  decodeTokens: number;
+  averageTtftMs: number | null;
+  decodeTokensPerSecond: number | null;
 }
 
 export interface DailyStats {
@@ -30,7 +46,7 @@ export interface ProviderStats {
   totalTokens: number;
   totalCost: string;
   successRate: number;
-  avgLatencyMs: number;
+  avgLatencyMs: number | null;
 }
 
 export interface ModelStats {
@@ -39,6 +55,18 @@ export interface ModelStats {
   totalTokens: number;
   totalCost: string;
   avgCostPerRequest: string;
+}
+
+export interface UsageBreakdownStats {
+  key: string;
+  requestCount: number;
+  totalTokens: number;
+  totalCost: string;
+  avgCostPerRequest: string;
+  unpricedRequests: number;
+  sourceName: string;
+  appType: string;
+  latestAt: number;
 }
 
 export interface RequestLogDetail {
@@ -67,6 +95,7 @@ export interface RequestLogDetail {
   costMultiplier: string;
   createdAt: number;
   dataSource: string;
+  project: string;
 }
 
 export interface LogFilters {
@@ -113,6 +142,17 @@ export interface SessionSyncResult {
   suspectedDuplicates: number;
   deferredFiles: number;
   errors: string[];
+  sourceStatuses: SyncSourceStatus[];
+}
+
+export interface SyncSourceStatus {
+  name: string;
+  detected: boolean;
+  imported: number;
+  skipped: number;
+  filesScanned: number;
+  deferredFiles: number;
+  errors: string[];
 }
 
 export interface DeviceInfo {
@@ -139,6 +179,7 @@ export interface CodexRadarSnapshot {
   iq: RadarIqSnapshot | null;
   quota: RadarQuotaSnapshot | null;
   fetchedAt: number;
+  usedFallback: boolean;
   warnings: string[];
 }
 

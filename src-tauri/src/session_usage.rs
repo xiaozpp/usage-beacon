@@ -10,7 +10,7 @@
 
 use crate::calculator::{CostCalculator, ModelPricing, TokenUsage};
 use crate::database::{get_claude_config_dir, Database};
-use crate::error::Result;
+use crate::error::{AppError, Result};
 use crate::schema::SESSION_REQUEST_ID_PREFIX;
 use chrono::DateTime;
 use rust_decimal::Decimal;
@@ -19,7 +19,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
+
+// 启动时后台同步和前端首次查询可能同时触发；所有来源共享一把锁，
+// 避免两个同步任务交错写入同一个 SQLite 连接而把单个来源误报为失败。
+static SESSION_SYNC_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// 同步结果
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -29,6 +34,20 @@ pub struct SessionSyncResult {
     pub skipped: u32,
     pub files_scanned: u32,
     pub suspected_duplicates: u32,
+    pub deferred_files: u32,
+    pub source_statuses: Vec<SyncSourceStatus>,
+    pub errors: Vec<String>,
+}
+
+/// 单个来源本次同步的可展示状态。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncSourceStatus {
+    pub name: String,
+    pub detected: bool,
+    pub imported: u32,
+    pub skipped: u32,
+    pub files_scanned: u32,
     pub deferred_files: u32,
     pub errors: Vec<String>,
 }
@@ -42,6 +61,7 @@ impl SessionSyncResult {
             .suspected_duplicates
             .saturating_add(other.suspected_duplicates);
         self.deferred_files = self.deferred_files.saturating_add(other.deferred_files);
+        self.source_statuses.extend(other.source_statuses);
         self.errors.extend(other.errors);
     }
 }
@@ -58,6 +78,7 @@ struct ParsedAssistantUsage {
     stop_reason: Option<String>,
     timestamp: Option<String>,
     session_id: Option<String>,
+    project: String,
 }
 
 /// 去重检查的指纹
@@ -113,6 +134,10 @@ pub fn sync_claude_session_logs(db: &Database) -> Result<SessionSyncResult> {
 /// 每个来源独立执行：单个来源不存在或解析失败不会阻断其他来源，
 /// 具体错误会汇总到结果中供前端展示。
 pub fn sync_all_session_logs(db: &Database) -> Result<SessionSyncResult> {
+    let _sync_guard = SESSION_SYNC_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|error| AppError::Database(format!("会话同步锁异常: {error}")))?;
     let mut result = SessionSyncResult::default();
 
     for (name, step) in [
@@ -125,10 +150,38 @@ pub fn sync_all_session_logs(db: &Database) -> Result<SessionSyncResult> {
         ),
         ("ZCode", crate::session_usage_zcode::sync_zcode_usage(db)),
         ("Grok Build", crate::session_usage_grok::sync_grok_usage(db)),
+        (
+            "DeepSeek Harness",
+            crate::session_usage_deepseek_harness::sync_deepseek_harness_usage(db),
+        ),
+        ("Hermes", crate::session_usage_hermes::sync_hermes_usage(db)),
     ] {
         match step {
-            Ok(source_result) => result.merge(source_result),
-            Err(error) => result.errors.push(format!("{name} 同步失败: {error}")),
+            Ok(source_result) => {
+                result.source_statuses.push(SyncSourceStatus {
+                    name: name.to_string(),
+                    detected: source_result.files_scanned > 0
+                        || source_result.imported > 0
+                        || source_result.skipped > 0
+                        || source_result.deferred_files > 0,
+                    imported: source_result.imported,
+                    skipped: source_result.skipped,
+                    files_scanned: source_result.files_scanned,
+                    deferred_files: source_result.deferred_files,
+                    errors: source_result.errors.clone(),
+                });
+                result.merge(source_result);
+            }
+            Err(error) => {
+                let message = format!("{name} 同步失败: {error}");
+                result.source_statuses.push(SyncSourceStatus {
+                    name: name.to_string(),
+                    detected: true,
+                    errors: vec![message.clone()],
+                    ..Default::default()
+                });
+                result.errors.push(message);
+            }
         }
     }
 
@@ -198,6 +251,8 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32)> {
 
     let metadata = fs::metadata(file_path)?;
     let file_modified = metadata_modified_nanos(&metadata);
+    let fallback_created_at = modified_nanos_to_seconds(file_modified);
+    let project = claude_project_key(file_path);
 
     let (last_modified, last_offset) = get_sync_state(db, &file_path_str)?;
 
@@ -290,6 +345,7 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32)> {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
             session_id: current_session_id.clone(),
+            project: project.clone(),
         };
 
         // 按 message.id 去重：优先保留有 stop_reason 的条目，否则保留最新且 output_tokens 更大的
@@ -325,7 +381,7 @@ fn sync_single_file(db: &Database, file_path: &Path) -> Result<(u32, u32)> {
 
         let request_id = format!("{}{}", SESSION_REQUEST_ID_PREFIX, msg.message_id);
 
-        match insert_session_log_entry(db, &request_id, msg) {
+        match insert_session_log_entry(db, &request_id, msg, fallback_created_at) {
             Ok(true) => imported += 1,
             Ok(false) => skipped += 1,
             Err(e) => {
@@ -360,6 +416,71 @@ pub(crate) fn metadata_modified_nanos(metadata: &fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
+pub(crate) fn modified_nanos_to_seconds(value: i64) -> Option<i64> {
+    (value > 0).then(|| value / 1_000_000_000)
+}
+
+pub(crate) fn parse_rfc3339_timestamp(value: Option<&str>) -> Option<i64> {
+    value
+        .and_then(|timestamp| DateTime::parse_from_rfc3339(timestamp).ok())
+        .map(|timestamp| timestamp.timestamp())
+}
+
+fn claude_project_key(file_path: &Path) -> String {
+    let mut candidate = None;
+    let mut current = file_path.parent();
+    while let Some(directory) = current {
+        if directory.file_name().and_then(|name| name.to_str()) == Some("projects") {
+            return candidate.unwrap_or_default();
+        }
+        candidate = directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(ToOwned::to_owned);
+        current = directory.parent();
+    }
+    String::new()
+}
+
+/// 将会话来源里的工作目录归一化为适合排行展示的项目名。
+///
+/// 只保留最后一级目录，避免把本机完整路径泄露到界面或导出数据里。
+pub(crate) fn project_name_from_path(value: Option<&str>) -> String {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return String::new();
+    };
+    let trimmed = value.trim_end_matches(|character| character == '\\' || character == '/');
+    trimmed
+        .rsplit(|character| character == '\\' || character == '/')
+        .next()
+        .filter(|name| !name.is_empty() && *name != ".")
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+/// 将已导入但尚未带项目名的会话行补齐。
+pub(crate) fn update_session_project(
+    db: &Database,
+    app_type: &str,
+    session_id: &str,
+    project: &str,
+) -> Result<bool> {
+    if project.trim().is_empty() || session_id.trim().is_empty() {
+        return Ok(false);
+    }
+    db.with_conn(|conn| {
+        let updated = conn.execute(
+            "UPDATE proxy_request_logs
+             SET project = ?1
+             WHERE app_type = ?2
+               AND session_id = ?3
+               AND COALESCE(project, '') = ''",
+            rusqlite::params![project.trim(), app_type, session_id],
+        )?;
+        Ok(updated > 0)
+    })
+}
+
 pub(crate) fn update_sync_state(
     db: &Database,
     file_path: &str,
@@ -387,22 +508,14 @@ fn insert_session_log_entry(
     db: &Database,
     request_id: &str,
     msg: &ParsedAssistantUsage,
+    fallback_created_at: Option<i64>,
 ) -> Result<bool> {
     db.with_conn(|conn| {
-        let created_at = msg
-            .timestamp
-            .as_ref()
-            .and_then(|ts| {
-                DateTime::parse_from_rfc3339(ts)
-                    .ok()
-                    .map(|dt| dt.timestamp())
-            })
-            .unwrap_or_else(|| {
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0)
-            });
+        let Some(created_at) = parse_rfc3339_timestamp(msg.timestamp.as_deref())
+            .or(fallback_created_at)
+        else {
+            return Ok(false);
+        };
 
         let dedup_key = DedupKey {
             app_type: "claude",
@@ -456,8 +569,8 @@ fn insert_session_log_entry(
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                 input_cost_usd, output_cost_usd, cache_read_cost_usd, cache_creation_cost_usd, total_cost_usd,
                 latency_ms, first_token_ms, status_code, error_message, session_id,
-                provider_type, is_streaming, cost_multiplier, created_at, data_source
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+                provider_type, is_streaming, cost_multiplier, created_at, data_source, project
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
             rusqlite::params![
                 request_id,
                 "_session",
@@ -483,6 +596,7 @@ fn insert_session_log_entry(
                 "1.0",
                 created_at,
                 "session_log",
+                msg.project,
             ],
         )?;
 
@@ -507,9 +621,10 @@ pub(crate) fn should_skip_session_insert(
 
     // 与 CC Switch 一致：只把成功的 proxy 行用于跨源去重；session 侧不暴露
     // cache_creation 时，0 表示未知，允许匹配 proxy 的任意 cache_creation 值。
-    let allow_missing_cache_creation =
-        matches!(key.app_type, "codex" | "gemini" | "opencode" | "zcode")
-            && key.cache_creation_tokens == 0;
+    let allow_missing_cache_creation = matches!(
+        key.app_type,
+        "codex" | "gemini" | "opencode" | "zcode" | "grokbuild" | "deepseek_harness" | "hermes"
+    ) && key.cache_creation_tokens == 0;
     let app_type_match =
         "l.app_type IN (?1, CASE WHEN ?1 = 'claude' THEN 'claude-desktop' ELSE ?1 END)";
     let sql = format!(
@@ -649,7 +764,7 @@ fn recost_session_logs_with_filter(db: &Database, only_zero_cost: bool) -> Resul
             "SELECT request_id, app_type, model, input_tokens, output_tokens,
                     cache_read_tokens, cache_creation_tokens
              FROM proxy_request_logs
-             WHERE data_source IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session', 'grok_session', 'zcode_session'){zero_cost_filter}"
+                WHERE data_source IN ('session_log', 'codex_session', 'gemini_session', 'opencode_session', 'grok_session', 'zcode_session', 'deepseek_harness_session', 'hermes_session'){zero_cost_filter}"
         );
         let mut stmt = conn.prepare(&select_sql)?;
         let rows: Vec<(String, String, String, i64, i64, i64, i64)> = stmt
@@ -817,6 +932,7 @@ mod tests {
             stop_reason: None,
             timestamp: None,
             session_id: None,
+            project: String::new(),
         };
         messages.insert("msg_1".to_string(), intermediate);
 
@@ -830,6 +946,7 @@ mod tests {
             stop_reason: Some("end_turn".to_string()),
             timestamp: None,
             session_id: None,
+            project: String::new(),
         };
 
         let should_replace = match messages.get("msg_1") {
@@ -846,5 +963,18 @@ mod tests {
         };
 
         assert!(should_replace);
+    }
+
+    #[test]
+    fn project_name_uses_the_last_path_component() {
+        assert_eq!(
+            project_name_from_path(Some(r"D:\work\usage-pulse")),
+            "usage-pulse"
+        );
+        assert_eq!(
+            project_name_from_path(Some("D:/work/LLM tools/")),
+            "LLM tools"
+        );
+        assert_eq!(project_name_from_path(None), "");
     }
 }

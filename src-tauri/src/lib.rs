@@ -10,8 +10,10 @@ mod pricing_sync;
 mod schema;
 mod session_usage;
 mod session_usage_codex;
+mod session_usage_deepseek_harness;
 mod session_usage_gemini;
 mod session_usage_grok;
+mod session_usage_hermes;
 mod session_usage_opencode;
 mod session_usage_zcode;
 mod usage_events;
@@ -74,9 +76,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::sync_session_logs,
             commands::fetch_usage_summary,
+            commands::fetch_runtime_stats,
             commands::fetch_daily_trends,
             commands::fetch_provider_stats,
             commands::fetch_model_stats,
+            commands::fetch_project_stats,
+            commands::fetch_session_stats,
             commands::fetch_request_logs,
             commands::fetch_request_detail,
             commands::fetch_model_pricing,

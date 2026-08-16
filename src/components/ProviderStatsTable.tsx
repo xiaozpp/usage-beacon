@@ -55,7 +55,9 @@ export function ProviderStatsTable({ data, isLoading }: Props) {
                     {fmtPercent(row.successRate)}
                   </td>
                   <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
-                    {fmtLatency(row.avgLatencyMs)}
+                    {row.avgLatencyMs === null
+                      ? t("common.notAvailable")
+                      : fmtLatency(row.avgLatencyMs)}
                   </td>
                 </tr>
               ))
